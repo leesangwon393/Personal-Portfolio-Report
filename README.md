@@ -21,5 +21,8 @@ Personal Portflio Report는 사용자가 보유한 주식 포트폴리오를 입
 ## Preview
 <img width="1200" height="707" alt="KakaoTalk_Photo_2026-05-13-20-19-30" src="https://github.com/user-attachments/assets/35510939-a17d-48a6-b2a6-065427e5c1c2" />
 
+<img width="1140" height="590" alt="image" src="https://github.com/user-attachments/assets/ce30a0b3-7aa0-49d2-acc8-4f39f6ac2b82" />
+
+
 ## 링크
 http://127.0.0.1:5000
