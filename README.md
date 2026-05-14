@@ -67,4 +67,22 @@ HF_TOKEN=
 FMP_API_KEY=
 ```
 
-`.env`와 로컬 DB, 모델 바이너리, 백업 CSV는 Git에 올리지 않도록 `.gitignore`에 포함되어 있습니다.
+`.env`, 로컬 DB, 백업 CSV는 Git에 올리지 않도록 `.gitignore`에 포함되어 있습니다. 튜닝된 LoRA 어댑터 가중치만 예외로 저장소에 포함합니다.
+
+## Tuned Model Inference
+
+튜닝된 LoRA 어댑터 가중치는 아래 경로에 포함되어 있습니다.
+
+```text
+train_and_inference/fiqa/model/
+train_and_inference/tfns/model/
+```
+
+로컬 추론은 Hugging Face에서 base model을 내려받아 위 어댑터를 붙여 실행합니다. `HF_TOKEN`이 필요합니다.
+
+```bash
+python3 model_inference.py --ticker AAPL --style SAFE --adapter fiqa
+python3 model_inference.py --ticker TSLA --style AGGRESSIVE --adapter tfns
+```
+
+`model_inference.py`는 저장된 뉴스 DB가 없으면 Yahoo Finance RSS에서 최신 뉴스를 가져오고, CSV 지표와 yfinance 재무 스냅샷을 함께 사용해 리포트를 생성합니다.

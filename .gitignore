@@ -21,3 +21,5 @@ my_srisk_result.csv
 *.pth
 *.bin
 *.safetensors
+!train_and_inference/fiqa/model/adapter_model.safetensors
+!train_and_inference/tfns/model/adapter_model.safetensors

@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import xml.etree.ElementTree as ET
+from html import unescape
 from pathlib import Path
+from urllib.parse import quote_plus
+import re
 
 import pandas as pd
+import requests
 import torch
+import yfinance as yf
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -45,6 +51,13 @@ Company: (company_name)
 """
 
 
+def clean_html(value: str | None) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", unescape(str(value)))
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def pick_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
@@ -57,9 +70,54 @@ def load_company_data(ticker: str) -> str:
     df = pd.read_csv(METRICS_PATH)
     df["Ticker"] = df["Ticker"].astype(str).str.upper()
     row = df[df["Ticker"] == ticker.upper()]
-    if row.empty:
-        return f"Ticker: {ticker.upper()}\nNo financial metrics found."
-    return row.iloc[0].dropna().to_string()
+    lines = []
+    if not row.empty:
+        lines.append(row.iloc[0].dropna().to_string())
+
+    try:
+        info = yf.Ticker(ticker).get_info()
+        live_fields = {
+            "Company": info.get("longName") or info.get("shortName"),
+            "Sector": info.get("sector"),
+            "Market Cap": info.get("marketCap"),
+            "Trailing EPS": info.get("trailingEps"),
+            "Profit Margins": info.get("profitMargins"),
+            "Revenue Growth": info.get("revenueGrowth"),
+            "Earnings Growth": info.get("earningsQuarterlyGrowth"),
+            "Debt To Equity": info.get("debtToEquity"),
+            "Current Ratio": info.get("currentRatio"),
+            "Free Cash Flow": info.get("freeCashflow"),
+        }
+        live_text = "\n".join(
+            f"{key}: {value}" for key, value in live_fields.items() if value is not None
+        )
+        if live_text:
+            lines.append("Live yfinance snapshot:\n" + live_text)
+    except Exception:
+        pass
+
+    return "\n\n".join(lines) or f"Ticker: {ticker.upper()}\nNo financial metrics found."
+
+
+def load_live_news(ticker: str, limit: int = 10) -> str:
+    url = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline"
+        f"?s={quote_plus(ticker.upper())}&region=US&lang=en-US"
+    )
+    response = requests.get(url, timeout=8)
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+
+    items = []
+    for item in root.findall("./channel/item"):
+        title = clean_html(item.findtext("title"))
+        summary = clean_html(item.findtext("description"))
+        pubdate = clean_html(item.findtext("pubDate"))
+        if title:
+            items.append(f"- {pubdate[:16]} | {title}: {summary}")
+        if len(items) >= limit:
+            break
+    return "\n".join(items) if items else "No live news found."
 
 
 def load_news(ticker: str, limit: int = 10) -> str:
@@ -83,7 +141,10 @@ def load_news(ticker: str, limit: int = 10) -> str:
     finally:
         conn.close()
     if not rows:
-        return "No summarized news found."
+        try:
+            return load_live_news(ticker, limit)
+        except Exception:
+            return "No summarized news found."
     return "\n".join(
         f"- {str(row['pubdate'])[:10]} | {row['headline']}: {row['summary']}"
         for row in rows
@@ -110,7 +171,11 @@ def build_prompt(ticker: str, investor_style: str) -> list[dict[str, str]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run local LoRA report inference.")
     parser.add_argument("--ticker", default="TSLA")
-    parser.add_argument("--style", default="SAFE", choices=["SAFE", "NEUTRAL", "RISKY"])
+    parser.add_argument(
+        "--style",
+        default="SAFE",
+        choices=["SAFE", "NEUTRAL", "RISKY", "AGGRESSIVE"],
+    )
     parser.add_argument("--adapter", default="fiqa", choices=sorted(ADAPTERS))
     parser.add_argument("--max-new-tokens", type=int, default=768)
     parser.add_argument("--min-new-tokens", type=int, default=120)
