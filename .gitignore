@@ -1,0 +1,22 @@
+.DS_Store
+.sisyphus/
+.env
+secrets_config.py
+__pycache__/
+.ipynb_checkpoints/
+
+# Runtime outputs
+news_db/
+crawled_latest.csv
+my_srisk_result.csv
+*.backup_*.csv
+*_failed_*.csv
+
+# Local databases and large model artifacts
+*.sqlite
+*.sqlite3
+*.db
+*.pt
+*.pth
+*.bin
+*.safetensors
