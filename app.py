@@ -4,9 +4,13 @@ import json
 import re
 import sqlite3
 import time
+import xml.etree.ElementTree as ET
+from html import unescape
 from pathlib import Path
+from urllib.parse import quote_plus
 
 import pandas as pd
+import requests
 import yfinance as yf
 from flask import Flask, jsonify, render_template, request
 
@@ -24,7 +28,10 @@ NEWS_DB_PATH = ROOT_DIR / "db" / "news.db"
 
 DEFAULT_PORTFOLIO = "AAPL 10, MSFT 8, NVDA 4, AMZN 6"
 PRICE_CACHE_TTL = 60
+DATA_CACHE_TTL = 15 * 60
 PRICE_CACHE: dict[str, tuple[float, float]] = {}
+FINANCIAL_CACHE: dict[str, tuple[dict, float]] = {}
+NEWS_CACHE: dict[str, tuple[list[dict], float]] = {}
 DEMO_PRICES = {
     "AAPL": 190.0,
     "MSFT": 420.0,
@@ -197,7 +204,73 @@ def load_financial_metrics() -> pd.DataFrame:
     return df
 
 
-def load_recent_news(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[dict]]:
+def _clean_html(value: str | None) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", unescape(str(value)))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def fetch_live_financials(ticker: str) -> dict:
+    cached = FINANCIAL_CACHE.get(ticker)
+    now = time.time()
+    if cached and now - cached[1] < DATA_CACHE_TTL:
+        return cached[0]
+
+    info = yf.Ticker(ticker).get_info()
+    snapshot = {
+        "Ticker": ticker,
+        "Company": info.get("longName") or info.get("shortName") or ticker,
+        "Sector": info.get("sector") or "Unknown",
+        "Market Cap": info.get("marketCap"),
+        "Diluted EPS (ttm)": info.get("trailingEps"),
+        "Profit Margin": info.get("profitMargins"),
+        "Quarterly Earnings Growth (yoy)": info.get("earningsQuarterlyGrowth"),
+        "Revenue Growth (yoy)": info.get("revenueGrowth"),
+        "Total Debt/Equity (mrq)": info.get("debtToEquity"),
+        "Current Ratio (mrq)": info.get("currentRatio"),
+        "Levered Free Cash Flow (ttm)": info.get("freeCashflow"),
+    }
+    FINANCIAL_CACHE[ticker] = (snapshot, now)
+    return snapshot
+
+
+def fetch_live_news(ticker: str, limit: int = 3) -> list[dict]:
+    cached = NEWS_CACHE.get(ticker)
+    now = time.time()
+    if cached and now - cached[1] < DATA_CACHE_TTL:
+        return cached[0][:limit]
+
+    url = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline"
+        f"?s={quote_plus(ticker)}&region=US&lang=en-US"
+    )
+    response = requests.get(url, timeout=8)
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+
+    items: list[dict] = []
+    for item in root.findall("./channel/item"):
+        title = _clean_html(item.findtext("title"))
+        summary = _clean_html(item.findtext("description"))
+        pubdate = _clean_html(item.findtext("pubDate"))
+        if title:
+            items.append(
+                {
+                    "headline": title,
+                    "summary": summary,
+                    "pubdate": pubdate,
+                    "source": "Yahoo Finance",
+                }
+            )
+        if len(items) >= limit:
+            break
+
+    NEWS_CACHE[ticker] = (items, now)
+    return items
+
+
+def load_recent_news_from_db(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[dict]]:
     news: dict[str, list[dict]] = {ticker: [] for ticker in tickers}
     if not NEWS_DB_PATH.exists() or not tickers:
         return news
@@ -221,6 +294,20 @@ def load_recent_news(tickers: list[str], limit_per_ticker: int = 3) -> dict[str,
             news[ticker] = [dict(row) for row in rows]
     finally:
         conn.close()
+    return news
+
+
+def load_recent_news(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[dict]]:
+    news: dict[str, list[dict]] = {ticker: [] for ticker in tickers}
+    if not tickers:
+        return news
+
+    db_news = load_recent_news_from_db(tickers, limit_per_ticker)
+    for ticker in tickers:
+        try:
+            news[ticker] = fetch_live_news(ticker, limit_per_ticker)
+        except Exception:
+            news[ticker] = db_news.get(ticker, [])
     return news
 
 
@@ -285,6 +372,12 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
         finance_row = None
         if not finance_by_ticker.empty and ticker in finance_by_ticker.index:
             finance_row = finance_by_ticker.loc[ticker]
+        try:
+            live_finance = fetch_live_financials(ticker)
+            if live_finance:
+                finance_row = live_finance
+        except Exception:
+            pass
         holding = holding_by_ticker.get(ticker, {})
         news_items = news_by_ticker.get(ticker, [])
         sector = holding.get("Sector") or (finance_row.get("Sector") if finance_row is not None else "Unknown")
@@ -299,9 +392,9 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
         ]
 
         if news_lines:
-            news_impact = "최근 뉴스는 실적, 수요, 정책 또는 산업 변화가 해당 종목의 단기 리스크 해석에 반영될 수 있음을 보여줍니다."
+            news_impact = "최신 뉴스는 실적, 수요, 정책 또는 산업 변화가 해당 종목의 단기 리스크 해석에 반영될 수 있음을 보여줍니다."
         else:
-            news_impact = "저장된 요약 뉴스가 없어 현재는 재무 지표와 포트폴리오 리스크 중심으로 판단합니다."
+            news_impact = "뉴스 조회 결과가 없어 현재는 재무 지표와 포트폴리오 리스크 중심으로 판단합니다."
 
         reports.append(
             {

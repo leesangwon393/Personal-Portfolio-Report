@@ -1,7 +1,6 @@
 .DS_Store
 .sisyphus/
 .env
-secrets_config.py
 __pycache__/
 .ipynb_checkpoints/
 .venv/
