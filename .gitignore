@@ -4,6 +4,8 @@
 secrets_config.py
 __pycache__/
 .ipynb_checkpoints/
+.venv/
+venv/
 
 # Runtime outputs
 news_db/
