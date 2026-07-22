@@ -52,7 +52,7 @@ def compute_srisk_from_portfolio(portfolio, full_df):
 
     # === 시장 전체 기준 robust Z-score 계산 ===
     S_sigma =  robust_zscore(sigma_p, full_df["Sigma"])              # 변동성 ↑ → 위험 ↑
-    S_mdd   = -robust_zscore(abs(mdd_p), abs(full_df["MDD"]))        # 낙폭 ↑ → 위험 ↑
+    S_mdd   = robust_zscore(abs(mdd_p), abs(full_df["MDD"]))        # 낙폭 ↑ → 위험 ↑
     S_beta  =  robust_zscore(beta_p, full_df["Beta"])                # 민감도 ↑ → 위험 ↑
     S_hhi   =  robust_zscore(hhi_p, pd.Series([(1/len(portfolio))**2]*len(full_df)))
 
