@@ -8,6 +8,7 @@ venv/
 
 # Runtime outputs
 news_db/
+local_data/
 crawled_latest.csv
 my_srisk_result.csv
 *.backup_*.csv

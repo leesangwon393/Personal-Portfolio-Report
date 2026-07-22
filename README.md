@@ -86,3 +86,15 @@ python3 model_inference.py --ticker TSLA --style AGGRESSIVE --adapter tfns
 ```
 
 `model_inference.py`는 저장된 뉴스 DB가 없으면 Yahoo Finance RSS에서 최신 뉴스를 가져오고, CSV 지표와 yfinance 재무 스냅샷을 함께 사용해 리포트를 생성합니다.
+
+## Earnings-call LoRA pipeline
+
+원문 데이터나 학습 결과물은 Git에 올리지 않습니다. Alpha Vantage의 `EARNINGS_CALL_TRANSCRIPT` API 사용 권한을 확인한 뒤, CEO/CFO 발화만 로컬 JSONL로 수집하고 LoRA 학습을 실행합니다.
+
+```bash
+# .env에 ALPHAVANTAGE_API_KEY와 필요 시 HF_TOKEN 설정
+python3 train_and_inference/earnings_call_lora.py collect --year 2025
+python3 train_and_inference/earnings_call_lora.py train
+```
+
+수집 결과와 어댑터는 `local_data/earnings_calls/`에 저장되며 `.gitignore`로 제외됩니다. 이 학습은 CEO/CFO 발화 기반의 금융 도메인 적응용이며, 개인화 리포트 생성에는 재무·뉴스·투자성향을 포함한 별도 instruction 데이터셋이 필요합니다.
