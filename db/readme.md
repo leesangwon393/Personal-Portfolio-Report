@@ -12,5 +12,9 @@ $env:OPENAI_API_KEY="...개인 키 입력..."
 
 python db.py summarize
 
-python db.py build-index --days 14
- 
+python db.py build-embeddings
+
+python db.py assign-events
+
+python db.py build-index --days 14   # legacy, RAG 경로(retrieval.py)는 미사용
+

@@ -122,6 +122,46 @@ def host(u: str|None):
         return None
 
 # ──────────────────────────────────────────────────────────────
+# Article-level normalization (Section 3/4)
+#   같은 기사가 ticker별로 여러 번 저장되지 않도록, 기사 원문을 식별하는
+#   canonical url / content_hash를 계산한다. ingestion(preprocess_and_upsert)
+#   에서 이 둘 중 하나라도 같으면 같은 article로 취급한다.
+# ──────────────────────────────────────────────────────────────
+def normalize_text(text: str | None) -> str:
+    """소문자화 + 구두점 제거 + 공백 정리. content_hash 계산 전 정규화용."""
+    if not text:
+        return ""
+    t = str(text).lower()
+    t = re.sub(r"[^0-9a-z\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def compute_content_hash(headline: str | None, body: str | None) -> str:
+    """headline+summary(or article)를 정규화한 뒤 sha256으로 content_hash 생성."""
+    normalized = normalize_text((headline or "") + " " + (body or ""))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+def canonicalize_url(url: str | None) -> str | None:
+    """쿼리스트링/트레일링 슬래시 차이로 같은 기사가 다르게 잡히지 않도록 URL을 정규화."""
+    if not url or not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return url.rstrip("/").lower()
+        return f"{parsed.scheme}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
+    except Exception:
+        return url
+
+def _add_column_if_missing(cur, table: str, column: str, decl: str):
+    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table});").fetchall()]
+    if column not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl};")
+
+# ──────────────────────────────────────────────────────────────
 # 날짜 정규화
 # ──────────────────────────────────────────────────────────────
 patterns = {
@@ -149,8 +189,12 @@ def normalize_pubdate(date_str):
 
 # ──────────────────────────────────────────────────────────────
 # DB 초기화
-#   - articles: 사람이 읽는 용(메타+summary)
-#   - integrated_index: 검색용 벡터(id, ivect only)
+#   - articles: 기사 원문 메타+요약 (article 기준 1행, ticker와 무관)
+#   - article_tickers: article ↔ ticker 다대다 관계 (Section 3/8)
+#   - article_embeddings: article 기준 MiniLM 임베딩 1개 (Section 3/6)
+#   - integrated_index: [LEGACY] Random Projection 기반 검색 벡터.
+#     새 RAG 경로(retrieval.py)는 사용하지 않는다. 과거 CLI
+#     (`build-index`/`search-index`)와의 호환을 위해서만 유지한다.
 # ──────────────────────────────────────────────────────────────
 def init_db(db_path: str | None = None):
     db_path = db_path or DB_PATH
@@ -168,10 +212,42 @@ def init_db(db_path: str | None = None):
         summary TEXT
     );
     """)
-    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_pubdate ON articles(pubdate);')
-    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_ticker  ON articles(ticker);')
+    # 기존 DB에도 additive하게 적용되는 신규 컬럼들 (Section 3).
+    # 오래된 row는 NULL로 남고, migrate_legacy_articles()로 채울 수 있다.
+    _add_column_if_missing(cur, "articles", "url", "TEXT")
+    _add_column_if_missing(cur, "articles", "source", "TEXT")
+    _add_column_if_missing(cur, "articles", "content_hash", "TEXT")
+    _add_column_if_missing(cur, "articles", "event_group_id", "TEXT")
+    _add_column_if_missing(cur, "articles", "created_at", "TIMESTAMP")
 
-    # (2) 검색용 벡터 인덱스 (id, ivect만)
+    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_pubdate      ON articles(pubdate);')
+    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_ticker       ON articles(ticker);')
+    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_content_hash ON articles(content_hash);')
+    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_url          ON articles(url);')
+    cur.execute('CREATE INDEX IF NOT EXISTS ix_articles_event_group  ON articles(event_group_id);')
+
+    # (2) article ↔ ticker 다대다 관계. 하나의 article이 여러 ticker와
+    #     연결될 수 있어 같은 기사를 ticker별로 다시 저장하지 않아도 된다.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS article_tickers (
+        article_id TEXT NOT NULL REFERENCES articles(id),
+        ticker     TEXT NOT NULL,
+        PRIMARY KEY (article_id, ticker)
+    );
+    """)
+    cur.execute('CREATE INDEX IF NOT EXISTS ix_article_tickers_ticker ON article_tickers(ticker);')
+
+    # (3) article 기준 MiniLM 임베딩 (ticker/시간 결합 없음, Random Projection 없음)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS article_embeddings (
+        article_id      TEXT PRIMARY KEY REFERENCES articles(id),
+        embedding       BLOB NOT NULL,
+        embedding_model TEXT NOT NULL,
+        created_at      TIMESTAMP
+    );
+    """)
+
+    # (4) [LEGACY] 검색용 벡터 인덱스 (id, ivect만) — Random Projection 사용.
     cur.execute("""
     CREATE TABLE IF NOT EXISTS integrated_index (
         id    TEXT PRIMARY KEY,
@@ -575,6 +651,11 @@ def _apply_news_column_aliases(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def upsert_minimal(df_ready: pd.DataFrame, db_path=None, table="articles"):
+    """[LEGACY] ticker-keyed id를 그대로 articles에 upsert하던 옛 경로.
+    같은 기사가 ticker마다 별도 row로 들어가는 문제(Section 2/4)가 있어
+    preprocess_and_upsert()는 더 이상 이 함수를 호출하지 않는다.
+    다른 코드가 이 함수를 직접 부르는 경우를 대비해 삭제하지 않고 남긴다.
+    """
     db_path = db_path or DB_PATH
     conn = sqlite3.connect(db_path)
     cols_real = [r[1] for r in conn.execute(f"PRAGMA table_info({table});").fetchall()]
@@ -588,6 +669,135 @@ def upsert_minimal(df_ready: pd.DataFrame, db_path=None, table="articles"):
     conn.execute("DROP TABLE tmp;")
     conn.commit()
     conn.close()
+
+def _lookup_existing_article_id(cur, canon_url: str | None, content_hash: str | None) -> str | None:
+    if canon_url:
+        row = cur.execute("SELECT id FROM articles WHERE url = ? LIMIT 1", (canon_url,)).fetchone()
+        if row:
+            return row[0]
+    if content_hash:
+        row = cur.execute("SELECT id FROM articles WHERE content_hash = ? LIMIT 1", (content_hash,)).fetchone()
+        if row:
+            return row[0]
+    return None
+
+def upsert_articles_normalized(df_ready: pd.DataFrame, db_path=None) -> dict:
+    """Section 3/4: 같은 원문 기사는 한 번만 저장하고, ticker는 관계 테이블로 관리.
+
+    판단 기준(둘 중 하나라도 같으면 같은 기사):
+        same canonical URL  OR  same content_hash
+
+    이미 존재하는 article이면 새 row를 만들지 않고 article_tickers 관계만
+    추가한다(하나의 article이 여러 ticker와 연결 가능, Section 8).
+    """
+    db_path = db_path or DB_PATH
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    stats = {"new_articles": 0, "duplicate_articles": 0, "ticker_links_added": 0}
+
+    for _, row in df_ready.iterrows():
+        headline = row.get("headline")
+        ticker = row.get("ticker")
+        if pd.isna(headline) or pd.isna(ticker) or not str(headline).strip() or not str(ticker).strip():
+            continue
+        ticker = str(ticker).strip().upper()
+        summary = row.get("summary")
+        summary = None if pd.isna(summary) else str(summary)
+        raw_url = row.get("primary_url")
+        raw_url = None if pd.isna(raw_url) else str(raw_url)
+        canon_url = canonicalize_url(raw_url)
+        content_hash = compute_content_hash(headline, summary or headline)
+        pubdate = row.get("pubdate")
+        pubdate = None if pd.isna(pubdate) else pubdate
+
+        existing_id = _lookup_existing_article_id(cur, canon_url, content_hash)
+        if existing_id:
+            article_id = existing_id
+            stats["duplicate_articles"] += 1
+        else:
+            fallback_id = row.get("id")
+            article_id = str(fallback_id) if fallback_id and pd.notna(fallback_id) else hashlib.sha1(
+                (canon_url or content_hash).encode("utf-8")
+            ).hexdigest()
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO articles
+                    (id, headline, ticker, pubdate, summary, url, source, content_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    article_id, headline, ticker, pubdate, summary,
+                    canon_url, host(canon_url), content_hash,
+                    pd.Timestamp.utcnow().isoformat(),
+                ),
+            )
+            stats["new_articles"] += 1
+
+        already_linked = cur.execute(
+            "SELECT 1 FROM article_tickers WHERE article_id = ? AND ticker = ?",
+            (article_id, ticker),
+        ).fetchone()
+        if not already_linked:
+            cur.execute(
+                "INSERT INTO article_tickers (article_id, ticker) VALUES (?, ?)",
+                (article_id, ticker),
+            )
+            stats["ticker_links_added"] += 1
+
+    conn.commit()
+    conn.close()
+    print(
+        f"upsert_articles_normalized: 신규 기사 {stats['new_articles']}건, "
+        f"중복(기존 기사 재사용) {stats['duplicate_articles']}건, "
+        f"ticker 연결 추가 {stats['ticker_links_added']}건"
+    )
+    return stats
+
+def migrate_legacy_articles(db_path=None) -> dict:
+    """기존(스키마 변경 이전) DB를 위한 1회성 backfill.
+
+    - articles.ticker(레거시 단일 컬럼) 기준으로 article_tickers 관계를 채운다.
+    - content_hash/created_at이 비어있는 row를 채운다.
+    이미 ticker별로 중복 저장된 과거 row들을 하나로 합치지는 않는다
+    (Section 3: "기존 데이터 migration이 너무 복잡하면 최소한 새 데이터부터
+    정상화된 구조를 사용"). 새로 들어오는 데이터는 upsert_articles_normalized가
+    정상화된 구조로 적재한다.
+    """
+    db_path = db_path or DB_PATH
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, headline, ticker, summary, content_hash, created_at FROM articles"
+    ).fetchall()
+
+    linked, hashed = 0, 0
+    for r in rows:
+        if r["ticker"]:
+            exists = cur.execute(
+                "SELECT 1 FROM article_tickers WHERE article_id=? AND ticker=?",
+                (r["id"], r["ticker"]),
+            ).fetchone()
+            if not exists:
+                cur.execute(
+                    "INSERT INTO article_tickers (article_id, ticker) VALUES (?, ?)",
+                    (r["id"], r["ticker"]),
+                )
+                linked += 1
+        if not r["content_hash"]:
+            ch = compute_content_hash(r["headline"], r["summary"] or r["headline"])
+            cur.execute("UPDATE articles SET content_hash=? WHERE id=?", (ch, r["id"]))
+            hashed += 1
+        if not r["created_at"]:
+            cur.execute(
+                "UPDATE articles SET created_at=? WHERE id=?",
+                (pd.Timestamp.utcnow().isoformat(), r["id"]),
+            )
+
+    conn.commit()
+    conn.close()
+    print(f"migrate-legacy: article_tickers {linked}건 backfill, content_hash {hashed}건 backfill")
+    return {"linked": linked, "hashed": hashed}
 
 def preprocess_and_upsert(csv_in=None, db_path=None):
     csv_in = csv_in or CSV_PATH
@@ -616,13 +826,13 @@ def preprocess_and_upsert(csv_in=None, db_path=None):
     pub_col = pick_pub_col(df)
     df = make_id(df, pub_col)
 
-    want = ["id","headline","ticker","pubdate","summary"]
+    want = ["id","headline","ticker","pubdate","summary","primary_url"]
     for c in want:
         if c not in df.columns:
             df[c] = None
     df_ready = df[want].copy()
 
-    upsert_minimal(df_ready, db_path=db_path)
+    upsert_articles_normalized(df_ready, db_path=db_path)
 
 # ──────────────────────────────────────────────────────────────
 # 요약(LLM) – DB의 summary가 비어있을 때만 갱신
@@ -742,7 +952,20 @@ def preview_db(db_path=None, limit=10):
     conn.close()
 
 # =================================================================
-# 통합 벡터 인덱스 (integrated_index: id, ivect만)
+# [LEGACY / DEPRECATED] 통합 벡터 인덱스 (integrated_index: id, ivect만)
+#
+# 이 섹션은 text embedding + ticker vector + recency vector를 concat한 뒤
+# "학습되지 않은" Random Projection(고정 random Gaussian 행렬, PROJ_SEED로
+# 결정론적)으로 256차원으로 축소하는 옛 검색 경로다. Random Projection은
+# 학습(learning) 과정이 아니라 차원 축소를 위한 비학습 선형 변환이며,
+# 현재 RAG 경로(retrieval.py)는 이 섹션을 전혀 사용하지 않는다.
+#
+# retrieval.py는 대신:
+#   - ticker를 metadata filter로 사용(article_tickers JOIN, Section 8)
+#   - recency를 별도 ranking score로 사용(Section 9)
+#   - MiniLM text embedding만 저장(article_embeddings, Section 6)
+# 하는 더 단순한 경로를 쓴다. 이 섹션은 과거 CLI(`build-index`,
+# `search-index`, `preview-index`)와의 하위 호환을 위해서만 남겨둔다.
 # =================================================================
 DIM_TEXT = 384
 DIM_META = 32
@@ -917,6 +1140,154 @@ def search_index(query: str, ticker: str|None = None, topk: int = 10, db_path=No
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:topk]
 
+# =================================================================
+# article_embeddings: article 기준 MiniLM 임베딩 (Section 3/6)
+#   - ticker/시간 결합 없음, Random Projection 없음
+#   - retrieval.py가 읽는 실제 RAG 임베딩 소스
+# =================================================================
+def build_article_embeddings(db_path=None, model=None, only_missing: bool = True, batch_size: int = 64) -> int:
+    db_path = db_path or DB_PATH
+    from rag_config import EMBEDDING_MODEL_NAME
+    if model is None:
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        model.max_seq_length = 512
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    query = """
+        SELECT a.id, a.headline, a.summary
+        FROM articles a
+        WHERE a.summary IS NOT NULL AND LENGTH(TRIM(a.summary)) > 0
+    """
+    if only_missing:
+        query += " AND a.id NOT IN (SELECT article_id FROM article_embeddings)"
+    rows = conn.execute(query).fetchall()
+    if not rows:
+        conn.close()
+        print("build-embeddings: 대상 기사 없음")
+        return 0
+
+    cur = conn.cursor()
+    done = 0
+    for start in range(0, len(rows), batch_size):
+        chunk = rows[start:start + batch_size]
+        texts = [((r["summary"] or "") + " " + (r["headline"] or "")).strip() for r in chunk]
+        vecs = model.encode(texts, normalize_embeddings=True)
+        now = pd.Timestamp.utcnow().isoformat()
+        for r, v in zip(chunk, vecs):
+            cur.execute("""
+                INSERT INTO article_embeddings (article_id, embedding, embedding_model, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(article_id) DO UPDATE SET
+                    embedding=excluded.embedding,
+                    embedding_model=excluded.embedding_model,
+                    created_at=excluded.created_at
+            """, (r["id"], _as_blob(np.asarray(v, dtype="float32")), EMBEDDING_MODEL_NAME, now))
+            done += 1
+        conn.commit()
+        print(f"build-embeddings: {done}/{len(rows)}건 진행 중…")
+    conn.close()
+    print(f"build-embeddings: 완료 ({done}건)")
+    return done
+
+# =================================================================
+# event_group_id 부여 (Section 5): exact duplicate로는 못 잡는
+# "제목은 다르지만 같은 사건" 기사들을 묶어서, retrieval 단계의
+# event dedup(같은 event_group_id에서 최고점 1개만 채택)이 동작하게 한다.
+#
+# 완벽한 클러스터링이 목적이 아니라 Top-K가 같은 이벤트로 도배되는 것을
+# 막는 것이 목적이므로, 다음 간단한 규칙만 쓴다:
+#   같은(관련) ticker + 발행일 차이 <= EVENT_DATE_WINDOW_DAYS
+#   + cosine similarity > EVENT_SIMILARITY_THRESHOLD
+# 서로 연결된 기사들은 union-find로 묶어 하나의 event_group_id를 공유한다.
+# =================================================================
+def assign_event_groups(db_path=None, similarity_threshold: float | None = None,
+                         date_window_days: int | None = None) -> dict:
+    from rag_config import EVENT_SIMILARITY_THRESHOLD, EVENT_DATE_WINDOW_DAYS
+    similarity_threshold = EVENT_SIMILARITY_THRESHOLD if similarity_threshold is None else similarity_threshold
+    date_window_days = EVENT_DATE_WINDOW_DAYS if date_window_days is None else date_window_days
+
+    db_path = db_path or DB_PATH
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT at.ticker, a.id AS article_id, a.pubdate, e.embedding
+        FROM article_tickers at
+        JOIN articles a ON a.id = at.article_id
+        JOIN article_embeddings e ON e.article_id = a.id
+    """).fetchall()
+    conn.close()
+    if not rows:
+        print("assign-event-groups: 대상 없음 (article_embeddings 먼저 생성 필요)")
+        return {}
+
+    by_ticker: dict = {}
+    for r in rows:
+        by_ticker.setdefault(r["ticker"], []).append(r)
+
+    parent: dict = {}
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for ticker, items in by_ticker.items():
+        n = len(items)
+        vecs = [_vec_from_blob(it["embedding"]) for it in items]
+        dates = [pd.to_datetime(it["pubdate"], utc=True, errors="coerce") for it in items]
+        for i in range(n):
+            find(items[i]["article_id"])
+            if vecs[i] is None:
+                continue
+            for j in range(i + 1, n):
+                if vecs[j] is None:
+                    continue
+                if pd.isna(dates[i]) or pd.isna(dates[j]):
+                    date_ok = True  # 발행일 정보가 없으면 유사도만으로 판단
+                else:
+                    date_ok = abs((dates[i] - dates[j]).days) <= date_window_days
+                if not date_ok:
+                    continue
+                sim = float(np.dot(vecs[i], vecs[j]))
+                if sim >= similarity_threshold:
+                    union(items[i]["article_id"], items[j]["article_id"])
+
+    clusters: dict = {}
+    all_ids = {it["article_id"] for items in by_ticker.values() for it in items}
+    for article_id in all_ids:
+        clusters.setdefault(find(article_id), []).append(article_id)
+
+    assignments: dict = {}
+    for members in clusters.values():
+        if len(members) <= 1:
+            continue  # 이벤트 그룹은 2개 이상 겹칠 때만 의미가 있다
+        members_sorted = sorted(members)
+        event_group_id = "evt_" + hashlib.sha1("|".join(members_sorted).encode("utf-8")).hexdigest()[:16]
+        for m in members_sorted:
+            assignments[m] = event_group_id
+
+    if assignments:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.executemany(
+            "UPDATE articles SET event_group_id = ? WHERE id = ?",
+            [(gid, aid) for aid, gid in assignments.items()],
+        )
+        conn.commit()
+        conn.close()
+    print(
+        f"assign-event-groups: {len(assignments)}개 기사에 event_group_id 부여 "
+        f"(threshold={similarity_threshold}, window={date_window_days}일)"
+    )
+    return assignments
+
 # ──────────────────────────────────────────────────────────────
 # 오래된 기사 삭제 + 유사 기사 정리
 # ──────────────────────────────────────────────────────────────
@@ -960,10 +1331,15 @@ def _quality_score(headline: str|None, summary: str|None):
     return len(s) + 0.5*len(h)
 
 def dedupe_similar_articles(db_path=None, threshold: float = 0.9):
-    """
-    같은 ticker 안에서 내용이 거의 같은 기사(코사인 유사도 >= threshold)를 중복으로 판단.
-    가장 점수 높은 것만 남기고 나머지는 삭제.
-    삭제 시 articles와 integrated_index 둘 다 정리.
+    """[선택적 하드 삭제] 같은 ticker 안에서 내용이 거의 같은 기사(코사인
+    유사도 >= threshold)를 중복으로 판단해 가장 점수 높은 것만 남기고
+    나머지는 삭제한다. 삭제 시 articles와 integrated_index 둘 다 정리.
+
+    Section 3 스키마 변경 이후 exact duplicate는 ingestion 단계
+    (upsert_articles_normalized)에서 이미 걸러지고, semantic/event
+    duplicate는 삭제 없이 assign_event_groups()가 event_group_id로 태깅해
+    retrieval 단계에서 처리한다. 이 함수는 여전히 동작하지만(레거시
+    호환), 새 파이프라인에서는 assign_event_groups를 우선 사용한다.
     """
     db_path = db_path or DB_PATH
     from sentence_transformers import SentenceTransformer
@@ -1086,13 +1462,17 @@ def make_sample_csv(src_csv: str, out_name: str = "sample3.csv", n: int = 3, tic
 def sandbox_demo(sample_csv_path: str, days_keep: int = 365, index_days: int = 365, preview_limit: int = 10):
     """
     샌드박스에서 샘플 CSV 기준으로 end-to-end 데모
-    순서: init → preprocess → summarize → cleanup → build-index → preview-index
+    순서: init → preprocess(정규화 적재) → summarize → cleanup
+         → build-embeddings(article 단위 MiniLM) → assign-events
+         → [legacy] build-index → preview-index
     """
     init_db(db_path=DB_PATH)
     preprocess_and_upsert(csv_in=sample_csv_path, db_path=DB_PATH)
     summarize_articles(db_path=DB_PATH)
     cleanup_db(db_path=DB_PATH, days_keep=days_keep, sim_threshold=0.9, preview_limit=preview_limit)
-    build_integrated_index(db_path=DB_PATH, days=index_days)
+    build_article_embeddings(db_path=DB_PATH)
+    assign_event_groups(db_path=DB_PATH)
+    build_integrated_index(db_path=DB_PATH, days=index_days)  # legacy, 하위 호환용
     preview_index(db_path=DB_PATH, limit=preview_limit)
 
 # ──────────────────────────────────────────────────────────────
@@ -1131,17 +1511,27 @@ def main():
     p_prev = sub.add_parser("preview")
     p_prev.add_argument("--limit", type=int, default=10)
 
-    # 인덱스
-    p_bidx = sub.add_parser("build-index")
+    # [LEGACY] Random Projection 기반 인덱스 — 하위 호환용, 새 RAG 경로는 미사용
+    p_bidx = sub.add_parser("build-index", help="[legacy] integrated_index(id, ivect) 재생성")
     p_bidx.add_argument("--days", type=int, default=30)
 
-    p_pvidx = sub.add_parser("preview-index")
+    p_pvidx = sub.add_parser("preview-index", help="[legacy] integrated_index 미리보기")
     p_pvidx.add_argument("--limit", type=int, default=10)
 
-    p_sidx = sub.add_parser("search-index")
+    p_sidx = sub.add_parser("search-index", help="[legacy] Random Projection 벡터로 검색")
     p_sidx.add_argument("--query", required=True)
     p_sidx.add_argument("--topk", type=int, default=10)
     p_sidx.add_argument("--ticker", default=None)
+
+    # 신규 RAG 파이프라인 (Section 3/5/6): article 기준 임베딩 + event dedup
+    p_bemb = sub.add_parser("build-embeddings", help="article_embeddings 생성/갱신 (MiniLM, article 단위 1회)")
+    p_bemb.add_argument("--all", action="store_true", help="이미 임베딩이 있어도 전체 재계산")
+
+    p_events = sub.add_parser("assign-events", help="event_group_id 부여 (동일 사건 기사 묶기)")
+    p_events.add_argument("--similarity-threshold", type=float, default=None)
+    p_events.add_argument("--date-window-days", type=int, default=None)
+
+    sub.add_parser("migrate-legacy", help="기존 DB에 article_tickers/content_hash 등 신규 컬럼 backfill")
 
     # 샌드박스 유틸
     p_mks = sub.add_parser("make-sample")
@@ -1220,7 +1610,9 @@ def main():
                 preprocess_and_upsert(csv_in=args.csv or CSV_PATH, db_path=DB_PATH)
                 summarize_articles(db_path=DB_PATH)
                 cleanup_db(db_path=DB_PATH, days_keep=14, sim_threshold=0.9, preview_limit=10)
-                build_integrated_index(db_path=DB_PATH, days=30)
+                build_article_embeddings(db_path=DB_PATH)
+                assign_event_groups(db_path=DB_PATH)
+                build_integrated_index(db_path=DB_PATH, days=30)  # legacy, 하위 호환용
                 time.sleep(max(60, args.interval_min*60))
         except KeyboardInterrupt:
             print("autocrawl 종료")
@@ -1276,6 +1668,19 @@ def main():
             sim_threshold=args.sim_threshold,
             preview_limit=args.preview_limit
         )
+
+    elif args.cmd == "build-embeddings":
+        build_article_embeddings(db_path=DB_PATH, only_missing=not args.all)
+
+    elif args.cmd == "assign-events":
+        assign_event_groups(
+            db_path=DB_PATH,
+            similarity_threshold=args.similarity_threshold,
+            date_window_days=args.date_window_days,
+        )
+
+    elif args.cmd == "migrate-legacy":
+        migrate_legacy_articles(db_path=DB_PATH)
 
 if __name__ == "__main__":
     main()

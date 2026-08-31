@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
+import sys
 import xml.etree.ElementTree as ET
 from html import unescape
 from pathlib import Path
@@ -16,6 +16,8 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from secrets_config import get_hf_token
+from rag_config import TOP_K
+from retrieval import normalize_investor_style, retrieve_news_with_fallback
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -31,8 +33,9 @@ NEWS_DB_PATH = ROOT_DIR / "db" / "news.db"
 SYSTEM_PROMPT = """You are an expert financial analyst. Your mission is to write a concise, objective investment report for a client based on their specific risk profile.
 
 ANALYSIS INSTRUCTIONS:
-- Use BOTH the provided financial metrics ("Facts") and recent news ("News").
+- Use BOTH the provided financial metrics ("Facts") and recent news ("News") as your only source of evidence.
 - Do not hallucinate numbers that are not in Facts.
+- Do not state uncertain or unverified information as fact.
 - Adjust the focus and tone strictly based on the investor's style.
 - Do NOT provide direct financial advice or buy/sell recommendations.
 
@@ -120,52 +123,110 @@ def load_live_news(ticker: str, limit: int = 10) -> str:
     return "\n".join(items) if items else "No live news found."
 
 
-def load_news(ticker: str, limit: int = 10) -> str:
-    if not NEWS_DB_PATH.exists():
-        return "No news database found."
-    conn = sqlite3.connect(NEWS_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            """
-            SELECT headline, summary, pubdate
-            FROM articles
-            WHERE ticker = ?
-              AND summary IS NOT NULL
-              AND LENGTH(TRIM(summary)) > 0
-            ORDER BY COALESCE(pubdate, id) DESC
-            LIMIT ?
-            """,
-            (ticker.upper(), limit),
-        ).fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        try:
-            return load_live_news(ticker, limit)
-        except Exception:
-            return "No summarized news found."
-    return "\n".join(
-        f"- {str(row['pubdate'])[:10]} | {row['headline']}: {row['summary']}"
-        for row in rows
+def _live_news_fallback(ticker: str, limit: int) -> list[dict]:
+    """Section 19, fallback level 3: Yahoo Finance RSS, reformatted into the
+    same dict shape retrieval.py's Top-K items use so build_prompt() can
+    render either uniformly.
+    """
+    text_block = load_live_news(ticker, limit=limit)
+    if not text_block or text_block == "No live news found.":
+        return []
+    items = []
+    for line in text_block.splitlines():
+        line = line.lstrip("- ").strip()
+        if not line or ":" not in line:
+            continue
+        date_part, rest = line.split("|", 1) if "|" in line else ("", line)
+        headline, _, summary = rest.partition(":")
+        items.append({
+            "headline": headline.strip() or rest.strip(),
+            "summary": summary.strip(),
+            "pubdate": date_part.strip() or None,
+            "source": "Yahoo Finance RSS",
+        })
+    return items
+
+
+def load_news(ticker: str, investor_style: str, top_k: int = TOP_K, debug: bool = False) -> tuple[str, dict]:
+    """Section 16: style-aware RAG retrieval replaces the old "ticker 최신
+    뉴스 10개" loader. Falls back per Section 19 (RAG -> DB recency -> live
+    RSS -> "no relevant news") when the DB has nothing usable yet.
+
+    Returns (formatted_news_block, retrieval_result) — the retrieval_result
+    dict carries the query and per-article scores for debugging/evaluation
+    (Section 17/18/20), even though the scores themselves are not injected
+    into the prompt text.
+    """
+    result = retrieve_news_with_fallback(
+        ticker=ticker,
+        investor_style=investor_style,
+        top_k=top_k,
+        db_path=NEWS_DB_PATH,
+        live_fallback_fn=_live_news_fallback,
     )
+    items = result["top_k"]
+
+    if debug:
+        print(
+            f"[retrieval] ticker={result['ticker']} style={result['investor_style']} "
+            f"source={result['source']} lookback_days={result['lookback_days']} "
+            f"query={result['query']!r}",
+            file=sys.stderr,
+        )
+        for i, item in enumerate(items, 1):
+            print(
+                f"  [{i}] final={item.get('final_score')} sem={item.get('semantic_score')} "
+                f"rec={item.get('recency_score')} event={item.get('event_group_id')} "
+                f"{str(item.get('pubdate'))[:10]} | {item.get('headline')}",
+                file=sys.stderr,
+            )
+
+    if not items:
+        return "No relevant news found.", result
+
+    blocks = []
+    for i, item in enumerate(items, 1):
+        date_str = str(item.get("pubdate") or "")[:10] or "N/A"
+        headline = item.get("headline") or "Untitled"
+        summary = item.get("summary") or ""
+        blocks.append(f"[{i}]\nDate: {date_str}\nHeadline: {headline}\nSummary: {summary}")
+    return "\n\n".join(blocks), result
 
 
-def build_prompt(ticker: str, investor_style: str) -> list[dict[str, str]]:
+def build_prompt(
+    ticker: str,
+    investor_style: str,
+    top_k: int = TOP_K,
+    debug: bool = False,
+) -> tuple[list[dict[str, str]], dict]:
+    """Section 17 prompt structure. Investor style is normalized once and
+    used for BOTH retrieval (Section 10) and generation personalization
+    (this prompt), and the same normalized style is what gets shown to the
+    model — so a legacy alias like "RISKY" reliably becomes "AGGRESSIVE" in
+    both the retrieval query and the report the model is asked to write.
+    """
+    style = normalize_investor_style(investor_style)
+    news_text, retrieval_result = load_news(ticker, style, top_k=top_k, debug=debug)
+
     user_prompt = f"""Analyze all the provided data and generate a report tailored to the investor's profile.
 
-1. Investor Style: {investor_style.upper()}
+1. Investor Style
+{style}
 
-2. Company Under Review, Key Data from Corporate Filings:
+2. Company Under Review
+Ticker: {ticker.upper()}
+
+3. Key Financial Data
 {load_company_data(ticker)}
 
-3. Recent News:
-{load_news(ticker)}
+4. Retrieved Relevant News
+{news_text}
 """
-    return [
+    messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
+    return messages, retrieval_result
 
 
 def main() -> None:
@@ -174,20 +235,32 @@ def main() -> None:
     parser.add_argument(
         "--style",
         default="SAFE",
-        choices=["SAFE", "NEUTRAL", "RISKY", "AGGRESSIVE"],
+        choices=["SAFE", "NEUTRAL", "RISKY", "AGGRESSIVE", "CONSERVATIVE"],
+        help="Any alias is normalized to SAFE/NEUTRAL/AGGRESSIVE (see retrieval.normalize_investor_style).",
     )
-    parser.add_argument("--adapter", default="fiqa", choices=sorted(ADAPTERS))
+    parser.add_argument(
+        "--adapter", default="fiqa", choices=sorted(ADAPTERS) + ["base"],
+        help="'base' runs Meta-Llama-3-8B-Instruct with no LoRA adapter (Section 23: base-vs-LoRA comparison).",
+    )
+    parser.add_argument("--top-k", type=int, default=TOP_K, help="RAG Top-K news items (Section 14).")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Print the retrieval query and per-article scores to stderr (Section 17/18/20).",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=768)
     parser.add_argument("--min-new-tokens", type=int, default=120)
     args = parser.parse_args()
 
     hf_token = get_hf_token(required=True)
-
     device = pick_device()
-    adapter_path = ADAPTERS[args.adapter]
 
-    print(f"Loading tokenizer from {adapter_path}")
-    tokenizer = AutoTokenizer.from_pretrained(adapter_path, local_files_only=True)
+    if args.adapter == "base":
+        print(f"Loading tokenizer from base model {BASE_MODEL}")
+        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, token=hf_token)
+    else:
+        adapter_path = ADAPTERS[args.adapter]
+        print(f"Loading tokenizer from {adapter_path}")
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path, local_files_only=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -201,11 +274,20 @@ def main() -> None:
     )
     base_model.to(device)
 
-    print(f"Loading LoRA adapter: {args.adapter}")
-    model = PeftModel.from_pretrained(base_model, adapter_path)
+    if args.adapter == "base":
+        print("Running the base model with no LoRA adapter (Section 23 comparison mode).")
+        model = base_model
+    else:
+        print(f"Loading LoRA adapter: {args.adapter}")
+        model = PeftModel.from_pretrained(base_model, ADAPTERS[args.adapter])
     model.eval()
 
-    messages = build_prompt(args.ticker, args.style)
+    messages, retrieval_result = build_prompt(
+        args.ticker, args.style, top_k=args.top_k, debug=args.debug,
+    )
+    if args.debug:
+        print(f"[prompt] investor_style={retrieval_result['investor_style']} "
+              f"news_source={retrieval_result['source']}", file=sys.stderr)
     encoded = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
