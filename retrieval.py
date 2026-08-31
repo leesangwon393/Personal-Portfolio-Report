@@ -1,20 +1,36 @@
-"""Style-aware RAG retrieval over the news DB built by db/db.py.
+"""Style-aware multi-query RAG retrieval over the news DB built by db/db.py.
 
 This module replaces the old "ticker 최신 뉴스 10개" loader used by
-model_inference.py with an actual retrieval pipeline:
+model_inference.py with a multi-query retrieval pipeline:
 
-    Ticker Candidate Filtering (Section 8, metadata filter — not embedded)
-          -> Style-aware Query (Section 10/11)
-          -> Semantic Similarity (Section 6, MiniLM cosine similarity)
-          -> Recency Score (Section 9, ranking score — not embedded)
-          -> Final Score (Section 12)
-          -> Score Ranking
-          -> Event Deduplication (Section 5/14 — one article per event_group)
-          -> Top-K (Section 14)
+    Ticker Candidate Filtering (metadata filter — not embedded)
+          -> Core Query + several Style Facet Queries, each embedded and
+             searched *separately* (Section 2-8)
+          -> Per-query Top-N candidate retrieval + Candidate Merge
+             (Section 8/9 — one row per article_id, matched_queries tracked)
+          -> Exact Duplicate Removal (Section 11, defensive — ingestion
+             already prevents this in the normal path)
+          -> Semantic + Recency Reranking (Section 13)
+          -> Event Deduplication (Section 12 — one article per event_group)
+          -> Top-K
 
-Personalization happens twice: once here at retrieval time (the query
-embedded for semantic search changes with investor_style — Section 10/11),
-and again at generation time in model_inference.py's system/user prompt.
+A single article is never scored against one long, blended "style-aware"
+query string. Instead, a style's concerns are split into a handful of
+narrow Facet Queries (e.g. SAFE = stability / downside_risk / external_risk)
+plus one investor_style-independent Core Query, each embedded and searched
+on its own. Candidates are merged into one pool keyed by article_id (so an
+article matched by several queries is never duplicated), and only *after*
+merging is a single semantic_score computed per article — the max cosine
+similarity across every query vector that was searched for this (ticker,
+investor_style). This keeps a company's core earnings/revenue/cash-flow
+news from being crowded out just because a user's style keywords don't
+happen to match it (Section 14/21: personalization must not become
+information bias), and keeps each query's search intent legible instead of
+diluted inside one long embedding.
+
+Personalization happens twice: once here at retrieval time (which Facet
+Queries get searched changes with investor_style — Section 4/5/6), and
+again at generation time in model_inference.py's system/user prompt.
 
 No FAISS/Chroma/Pinecone/vector DB product is used — candidates and their
 MiniLM embeddings live in SQLite (db/news.db, article_embeddings table) and
@@ -34,6 +50,7 @@ import numpy as np
 import pandas as pd
 
 from rag_config import (
+    CANDIDATES_PER_QUERY,
     EMBEDDING_MODEL_NAME,
     HALF_LIFE_DAYS,
     MIN_CANDIDATES_BEFORE_EXPAND,
@@ -80,45 +97,123 @@ def normalize_investor_style(investor_style: str | None) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# Section 11: style-aware query templates (config, easy to tune)
+# Section 2: core query — same for every investor_style
 # ──────────────────────────────────────────────────────────────
-# Each list gives *priority*, not exclusivity: a SAFE query does not exclude
-# growth news and an AGGRESSIVE query does not exclude risk news — they just
-# bias which article embeddings end up closest to the query embedding.
-STYLE_QUERY_KEYWORDS: dict[str, list[str]] = {
-    "SAFE": [
-        "financial stability", "cash flow", "debt", "profitability",
-        "margin deterioration", "earnings miss", "guidance cut",
-        "regulatory risk", "customer concentration", "valuation risk",
-        "downside risk",
-    ],
-    "NEUTRAL": [
-        "earnings", "revenue", "profitability", "margins", "cash flow",
-        "growth", "guidance", "valuation", "opportunities", "risks",
-        "financial outlook",
-    ],
-    "AGGRESSIVE": [
-        "revenue growth", "earnings surprise", "guidance raise",
-        "growth catalyst", "new products", "market expansion", "AI demand",
-        "new customers", "innovation", "upside opportunities",
-    ],
+# What every investor needs to see about a company regardless of risk
+# appetite: its core financial performance. This keyword list does not
+# change with investor_style, which is the point — it's what keeps a
+# company's headline earnings/revenue news showing up for SAFE and
+# AGGRESSIVE users alike (Section 14/21).
+CORE_QUERY_KEYWORDS: list[str] = [
+    "earnings", "revenue", "profitability", "cash flow", "guidance",
+    "financial performance",
+]
+
+
+def build_core_query(ticker: str) -> str:
+    """Section 2: (ticker) -> core query string, identical across styles."""
+    return " ".join([ticker.upper(), *CORE_QUERY_KEYWORDS])
+
+
+# ──────────────────────────────────────────────────────────────
+# Section 4/5/6: style facet query templates (config, easy to tune)
+# ──────────────────────────────────────────────────────────────
+# A style's concerns are split into 2-3 narrow facets instead of one long
+# query string (Section 3/21) — each facet is one clear search intent, so
+# an embedding isn't asked to represent "stability AND downside risk AND
+# regulation" all at once. Facets give *priority*, not exclusivity: they
+# don't exclude the opposite kind of news, they just bias which articles
+# rank high for that particular facet's Top-N (Section 8). Core company
+# news is already covered by build_core_query() above, so facets only need
+# what a given style cares about *on top of* that shared baseline.
+STYLE_FACET_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    "SAFE": {
+        "stability": [
+            "financial stability", "debt", "cash flow stability",
+            "liquidity", "balance sheet",
+        ],
+        "downside_risk": [
+            "downside risk", "earnings miss", "margin deterioration",
+            "guidance cut", "valuation risk",
+        ],
+        "external_risk": [
+            "regulatory risk", "customer concentration", "competition risk",
+            "supply risk", "geopolitical risk",
+        ],
+    },
+    "NEUTRAL": {
+        "growth": [
+            "revenue growth", "earnings growth", "market growth",
+            "business expansion",
+        ],
+        "profitability_valuation": [
+            "profitability", "margin", "cash flow", "valuation",
+            "financial efficiency",
+        ],
+        "risk_outlook": [
+            "business risk", "guidance", "competition", "financial outlook",
+            "uncertainty",
+        ],
+    },
+    "AGGRESSIVE": {
+        "growth": [
+            "revenue growth", "earnings growth", "market expansion",
+            "customer growth",
+        ],
+        "catalyst": [
+            "new products", "innovation", "growth catalyst", "new customers",
+            "partnership",
+        ],
+        "positive_momentum": [
+            "earnings surprise", "guidance raise", "market share gain",
+            "demand growth", "upside opportunity",
+        ],
+    },
 }
 
 
-def build_retrieval_query(ticker: str, investor_style: str) -> str:
-    """Section 10/11: (ticker, investor_style) -> retrieval query string.
+def build_style_facet_queries(ticker: str, investor_style: str) -> list[tuple[str, str]]:
+    """Section 4/5/6: (ticker, investor_style) -> [(facet_label, query), ...].
 
-    This is the retrieval-side personalization: SAFE/NEUTRAL/AGGRESSIVE
-    bias the *semantic search itself*, not just what the LLM is told to
-    emphasize afterwards.
+    facet_label (e.g. "safe_downside_risk") is only used internally for
+    matched_queries/debug tracking (Section 9/16) — retrieval scoring
+    itself doesn't care about the label, only the embedded query text.
     """
     style = normalize_investor_style(investor_style)
-    keywords = STYLE_QUERY_KEYWORDS.get(style, STYLE_QUERY_KEYWORDS["NEUTRAL"])
-    return " ".join([ticker.upper(), *keywords])
+    facets = STYLE_FACET_KEYWORDS.get(style, STYLE_FACET_KEYWORDS["NEUTRAL"])
+    return [
+        (f"{style.lower()}_{name}", " ".join([ticker.upper(), *keywords]))
+        for name, keywords in facets.items()
+    ]
+
+
+def _labeled_queries(ticker: str, investor_style: str) -> list[tuple[str, str]]:
+    """Core Query (label "core") followed by that style's Facet Queries —
+    the actual list of (label, query_text) pairs multi-query retrieval
+    embeds and searches independently (Section 7/8).
+    """
+    style = normalize_investor_style(investor_style)
+    return [("core", build_core_query(ticker)), *build_style_facet_queries(ticker, style)]
+
+
+def build_retrieval_queries(ticker: str, investor_style: str) -> dict:
+    """Section 7: (ticker, investor_style) -> {"core": [...], "style_facets": [...]}.
+
+    Plain query-string lists (no labels) — the shape a caller/debug script
+    wants to print or hand to an external retriever. retrieve_news() itself
+    uses _labeled_queries() so it can still track which facet an article
+    matched (matched_queries).
+    """
+    style = normalize_investor_style(investor_style)
+    labeled = _labeled_queries(ticker, style)
+    return {
+        "core": [text for label, text in labeled if label == "core"],
+        "style_facets": [text for label, text in labeled if label != "core"],
+    }
 
 
 # ──────────────────────────────────────────────────────────────
-# Section 9: recency as a ranking score (never embedded)
+# Section 5: recency as a ranking score (never embedded)
 # ──────────────────────────────────────────────────────────────
 def calculate_recency_score(pubdate, *, half_life_days: float = HALF_LIFE_DAYS, now=None) -> float:
     """exp(-ln2 * days_old / half_life_days), clamped to today for future dates."""
@@ -182,8 +277,9 @@ def _vec_from_blob(blob) -> np.ndarray | None:
 # ──────────────────────────────────────────────────────────────
 def fetch_ticker_candidates(ticker: str, db_path=None, lookback_days: int = NEWS_LOOKBACK_DAYS) -> list[dict]:
     """Ticker filtering via article_tickers (metadata filter, not an embedded
-    vector — Section 8). An article linked to several tickers is a
-    candidate for each of them.
+    vector — Section 10). An article linked to several tickers is a
+    candidate for each of them. Includes content_hash so the multi-query
+    merge step (Section 11) can defensively re-check for exact duplicates.
     """
     db_path = str(db_path or DEFAULT_DB_PATH)
     conn = sqlite3.connect(db_path)
@@ -192,7 +288,7 @@ def fetch_ticker_candidates(ticker: str, db_path=None, lookback_days: int = NEWS
         rows = conn.execute(
             """
             SELECT a.id AS article_id, a.headline, a.summary, a.pubdate,
-                   a.source, a.url, a.event_group_id, e.embedding
+                   a.source, a.url, a.event_group_id, a.content_hash, e.embedding
             FROM article_tickers at
             JOIN articles a ON a.id = at.article_id
             JOIN article_embeddings e ON e.article_id = a.id
@@ -234,8 +330,37 @@ def fetch_recent_articles_fallback(ticker: str, top_k: int = TOP_K, db_path=None
     return [dict(r) for r in rows]
 
 
+def _drop_exact_duplicates(candidates_by_id: dict, article_ids: list[str]) -> tuple[list[str], int]:
+    """Section 11: exact-duplicate safety net at merge time.
+
+    Ingestion (`db.upsert_articles_normalized` / `_lookup_existing_article_id`)
+    already prevents two different article_id rows for the same canonical
+    URL or content_hash in the normal path, so this should usually drop 0.
+    It exists as a defensive re-check for legacy rows (e.g. ingested before
+    content_hash backfill via `db.py migrate-legacy`). Order is preserved;
+    the first occurrence of a given URL/content_hash is kept.
+    """
+    seen_hashes: set[str] = set()
+    seen_urls: set[str] = set()
+    kept = []
+    dropped = 0
+    for aid in article_ids:
+        c = candidates_by_id[aid]
+        content_hash = c.get("content_hash")
+        url = c.get("url")
+        if (content_hash and content_hash in seen_hashes) or (url and url in seen_urls):
+            dropped += 1
+            continue
+        if content_hash:
+            seen_hashes.add(content_hash)
+        if url:
+            seen_urls.add(url)
+        kept.append(aid)
+    return kept, dropped
+
+
 # ──────────────────────────────────────────────────────────────
-# Section 12/14: full retrieval pipeline
+# Section 8-15: full multi-query retrieval pipeline
 # ──────────────────────────────────────────────────────────────
 def retrieve_news(
     ticker: str,
@@ -244,15 +369,29 @@ def retrieve_news(
     db_path=None,
     lookback_days: int = NEWS_LOOKBACK_DAYS,
     model=None,
+    candidates_per_query: int = CANDIDATES_PER_QUERY,
     semantic_weight: float = SEMANTIC_WEIGHT,
     recency_weight: float = RECENCY_WEIGHT,
 ) -> dict:
-    """Runs the full Section 14 pipeline and returns both the ranked
-    (pre-dedup) candidates and the final top_k list, so debugging/eval code
-    (Section 17/18/20) can inspect scores without re-running retrieval.
+    """Runs the full multi-query retrieval pipeline and returns both the
+    reranked (pre-event-dedup) candidates and the final top_k list, so
+    debugging/eval code can inspect scores without re-running retrieval.
+
+    Core Query and every Style Facet Query (Section 2-6) are embedded and
+    searched *separately* against the same ticker-filtered candidate pool.
+    Each query contributes its own Top-N (Section 8); those Top-N lists are
+    merged into one article_id-keyed pool (Section 9) before a single
+    semantic_score per article is computed as the max similarity across
+    every query (Section 13) — never a fixed-weight mix of "the" core score
+    and "the" style score.
     """
     style = normalize_investor_style(investor_style)
-    query = build_retrieval_query(ticker, style)
+    labeled_queries = _labeled_queries(ticker, style)
+    query_labels = [label for label, _ in labeled_queries]
+    queries_shape = {
+        "core": [text for label, text in labeled_queries if label == "core"],
+        "style_facets": [text for label, text in labeled_queries if label != "core"],
+    }
 
     windows = [max(1, int(lookback_days * m)) for m in NEWS_LOOKBACK_EXPANSION]
     candidates: list[dict] = []
@@ -263,34 +402,87 @@ def retrieve_news(
         if len(candidates) >= max(top_k, MIN_CANDIDATES_BEFORE_EXPAND):
             break
 
+    empty_result = {
+        "ticker": ticker.upper(),
+        "investor_style": style,
+        "queries": queries_shape,
+        "query_labels": query_labels,
+        "lookback_days": used_window,
+        "candidate_pool_size": len(candidates),
+        "per_query_topn": {label: [] for label in query_labels},
+        "merged_candidate_count": 0,
+        "exact_duplicate_count": 0,
+        "core_hit_count": 0,
+        "ranked": [],
+        "top_k": [],
+        "source": "empty",
+    }
     if not candidates:
-        return {
-            "ticker": ticker.upper(),
-            "investor_style": style,
-            "query": query,
-            "lookback_days": used_window,
-            "ranked": [],
-            "top_k": [],
-            "source": "empty",
-        }
+        return empty_result
 
-    query_vec = embed_query(query, model=model)
-    ranked = []
+    # Ticker Candidate Filtering already happened in fetch_ticker_candidates
+    # (Section 10). What's left here is per-query semantic search over that
+    # same ticker-filtered pool — ticker is never re-embedded per query.
+    candidates_by_id: dict[str, dict] = {}
+    article_vecs: dict[str, np.ndarray] = {}
     for c in candidates:
-        article_vec = _vec_from_blob(c["embedding"])
-        if article_vec is None:
+        vec = _vec_from_blob(c["embedding"])
+        if vec is None:
             continue
-        semantic_score = cosine_similarity(query_vec, article_vec)
+        candidates_by_id[c["article_id"]] = c
+        article_vecs[c["article_id"]] = vec
+
+    if not article_vecs:
+        return empty_result
+
+    query_vecs = [(label, embed_query(text, model=model)) for label, text in labeled_queries]
+
+    # Similarity of every candidate to every query — cheap in-memory matrix,
+    # since both the candidate pool and the query count are small. This is
+    # what lets semantic_score (below) use "max across ALL queries" rather
+    # than being limited to whichever query an article happened to Top-N in.
+    sims: dict[str, dict[str, float]] = {
+        aid: {label: cosine_similarity(qvec, vec) for label, qvec in query_vecs}
+        for aid, vec in article_vecs.items()
+    }
+
+    # Per-query Top-N retrieval + Candidate Merge (Section 8/9): each query
+    # independently ranks the full candidate pool and keeps its own
+    # Top-N (CANDIDATES_PER_QUERY). matched_queries records which query
+    # label(s) put a given article in its Top-N — merging is simply the
+    # union of article_ids across all queries, deduplicated by using a
+    # dict (an article matched by 2 queries never becomes 2 rows).
+    matched_queries: dict[str, list[str]] = {aid: [] for aid in article_vecs}
+    per_query_topn: dict[str, list[str]] = {}
+    for label in query_labels:
+        ranked_for_query = sorted(article_vecs, key=lambda aid: sims[aid][label], reverse=True)
+        top_n = ranked_for_query[:candidates_per_query]
+        per_query_topn[label] = top_n
+        for aid in top_n:
+            matched_queries[aid].append(label)
+
+    merged_ids = [aid for aid in article_vecs if matched_queries[aid]]
+    merged_candidate_count = len(merged_ids)
+
+    # Exact Duplicate Removal (Section 11), applied to the merged pool.
+    deduped_ids, exact_duplicate_count = _drop_exact_duplicates(candidates_by_id, merged_ids)
+
+    # Semantic + Recency Reranking (Section 13).
+    ranked = []
+    for aid in deduped_ids:
+        c = candidates_by_id[aid]
+        semantic_score = max(sims[aid].values())
         recency_score = calculate_recency_score(c["pubdate"])
         final_score = semantic_weight * semantic_score + recency_weight * recency_score
         ranked.append({
-            "article_id": c["article_id"],
+            "article_id": aid,
             "headline": c["headline"],
             "summary": c["summary"],
             "pubdate": c["pubdate"],
             "source": c["source"],
             "url": c["url"],
             "event_group_id": c["event_group_id"],
+            "matched_queries": matched_queries[aid],
             "semantic_score": semantic_score,
             "recency_score": recency_score,
             "final_score": final_score,
@@ -298,7 +490,7 @@ def retrieve_news(
 
     ranked.sort(key=lambda x: x["final_score"], reverse=True)
 
-    # Event Deduplication (Section 5/14/15): keep only the highest-scoring
+    # Event Deduplication (Section 12): keep only the highest-scoring
     # article per event_group_id so Top-K isn't dominated by one event.
     # Articles with no event_group_id (didn't cluster with anything) are
     # always kept as their own "event".
@@ -313,11 +505,23 @@ def retrieve_news(
         if len(top_k_items) >= top_k:
             break
 
+    # Section 14 diagnostic (not enforced as a hard rule): how many Top-K
+    # slots are there specifically because of the core query. If this is
+    # ever 0 for a ticker with real core-relevant news available, that's a
+    # signal candidates_per_query/weights may be crowding core info out.
+    core_hit_count = sum(1 for item in top_k_items if "core" in item["matched_queries"])
+
     return {
         "ticker": ticker.upper(),
         "investor_style": style,
-        "query": query,
+        "queries": queries_shape,
+        "query_labels": query_labels,
         "lookback_days": used_window,
+        "candidate_pool_size": len(candidates),
+        "per_query_topn": per_query_topn,
+        "merged_candidate_count": merged_candidate_count,
+        "exact_duplicate_count": exact_duplicate_count,
+        "core_hit_count": core_hit_count,
         "ranked": ranked,
         "top_k": top_k_items,
         "source": "rag",
@@ -354,7 +558,7 @@ def retrieve_news_with_fallback(
     fallback_articles = fetch_recent_articles_fallback(ticker, top_k=top_k, db_path=db_path)
     if fallback_articles:
         result["top_k"] = [
-            {**a, "semantic_score": None, "recency_score": None,
+            {**a, "matched_queries": None, "semantic_score": None, "recency_score": None,
              "final_score": None, "event_group_id": None}
             for a in fallback_articles
         ]
@@ -388,18 +592,26 @@ def jaccard_overlap(top_k_a: list[dict], top_k_b: list[dict]) -> float:
 
 
 # ──────────────────────────────────────────────────────────────
-# Section 18: debug CLI — inspect query + Top-K per style for one ticker
+# Section 16/18: debug CLI — inspect queries + candidates + Top-K per style
 # ──────────────────────────────────────────────────────────────
 def _format_debug(result: dict) -> str:
     lines = [
         f"ticker={result['ticker']} style={result['investor_style']} "
         f"source={result['source']} lookback_days={result['lookback_days']}",
-        f"query={result['query']!r}",
+        f"core_query={result['queries']['core']!r}",
+        f"style_facet_queries={result['queries']['style_facets']!r}",
+        f"candidate_pool_size={result.get('candidate_pool_size')} "
+        f"merged_candidate_count={result.get('merged_candidate_count')} "
+        f"exact_duplicate_count={result.get('exact_duplicate_count')} "
+        f"core_hit_count={result.get('core_hit_count')}",
     ]
+    for label, ids in (result.get("per_query_topn") or {}).items():
+        lines.append(f"  per_query_topn[{label}]={ids}")
     for i, item in enumerate(result["top_k"], 1):
         lines.append(
-            f"  [{i}] final={item.get('final_score')} sem={item.get('semantic_score')} "
-            f"rec={item.get('recency_score')} event={item.get('event_group_id')} "
+            f"  [{i}] final={item.get('final_score')} semantic={item.get('semantic_score')} "
+            f"rec={item.get('recency_score')} matched={item.get('matched_queries')} "
+            f"event={item.get('event_group_id')} "
             f"{str(item.get('pubdate'))[:10]} | {item.get('headline')}"
         )
     return "\n".join(lines)
@@ -407,7 +619,7 @@ def _format_debug(result: dict) -> str:
 
 def main() -> None:
     import argparse
-    parser = argparse.ArgumentParser(description="Style-aware RAG retrieval debug CLI (Section 18)")
+    parser = argparse.ArgumentParser(description="Style-aware multi-query RAG retrieval debug CLI (Section 16/18)")
     parser.add_argument("--ticker", required=True)
     parser.add_argument("--style", default="NEUTRAL")
     parser.add_argument("--top-k", type=int, default=TOP_K)

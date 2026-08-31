@@ -26,9 +26,22 @@ def _fake_retrieval_result(source: str = "rag") -> dict:
     return {
         "ticker": "NVDA",
         "investor_style": "AGGRESSIVE",
-        "query": "NVDA revenue growth earnings surprise guidance raise growth catalyst",
+        "queries": {
+            "core": ["NVDA earnings revenue profitability cash flow guidance financial performance"],
+            "style_facets": [
+                "NVDA revenue growth earnings growth market expansion customer growth",
+                "NVDA new products innovation growth catalyst new customers partnership",
+                "NVDA earnings surprise guidance raise market share gain demand growth upside opportunity",
+            ],
+        },
+        "query_labels": ["core", "aggressive_growth", "aggressive_catalyst", "aggressive_positive_momentum"],
         "lookback_days": 60,
         "source": source,
+        "candidate_pool_size": 1,
+        "per_query_topn": {"core": ["abc123"], "aggressive_growth": ["abc123"]},
+        "merged_candidate_count": 1,
+        "exact_duplicate_count": 0,
+        "core_hit_count": 1,
         "ranked": [],
         "top_k": [
             {
@@ -39,6 +52,7 @@ def _fake_retrieval_result(source: str = "rag") -> dict:
                 "source": "Yahoo Finance",
                 "url": "https://example.com",
                 "event_group_id": None,
+                "matched_queries": ["core", "aggressive_growth"],
                 "semantic_score": 0.8,
                 "recency_score": 0.9,
                 "final_score": 0.82,

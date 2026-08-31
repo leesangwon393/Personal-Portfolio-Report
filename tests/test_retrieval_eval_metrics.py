@@ -11,7 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evaluation.retrieval_eval import ndcg_at_k, precision_at_k, recall_at_k  # noqa: E402
+from evaluation.retrieval_eval import (  # noqa: E402
+    _average_score,
+    ndcg_at_k,
+    precision_at_k,
+    recall_at_k,
+)
 
 
 class TestRetrievalMetrics(unittest.TestCase):
@@ -44,6 +49,23 @@ class TestRetrievalMetrics(unittest.TestCase):
 
     def test_ndcg_no_relevant_is_zero(self):
         self.assertEqual(ndcg_at_k(["a", "b"], set(), 2), 0.0)
+
+
+class TestAverageScore(unittest.TestCase):
+    """average_semantic_score / average_recency_score diagnostics (Section 20)."""
+
+    def test_average_of_present_values(self):
+        items = [{"semantic_score": 0.4}, {"semantic_score": 0.6}]
+        self.assertAlmostEqual(_average_score(items, "semantic_score"), 0.5)
+
+    def test_none_values_are_skipped_not_zeroed(self):
+        # recency/live fallback Top-K items carry semantic_score=None;
+        # averaging them in as 0 would understate a case that fell back.
+        items = [{"semantic_score": 0.8}, {"semantic_score": None}]
+        self.assertAlmostEqual(_average_score(items, "semantic_score"), 0.8)
+
+    def test_empty_items_is_zero(self):
+        self.assertEqual(_average_score([], "semantic_score"), 0.0)
 
 
 if __name__ == "__main__":

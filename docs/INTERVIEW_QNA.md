@@ -30,19 +30,76 @@
 넣고 "제공된 사실 외에는 만들어내지 말라"는 지시를 System Prompt에 유지해,
 hallucination을 줄이는 근거로도 RAG를 씁니다.
 
-### 왜 SAFE / NEUTRAL / AGGRESSIVE별 Retrieval Query를 다르게 했나요?
+### 왜 하나의 Style Query를 사용하지 않았나요?
 
-개인화가 Generation(LLM 프롬프트) 단계에서만 일어나면, LLM에 넣어주는 뉴스
-자체는 모든 사용자에게 동일하고 "해석"만 달라집니다. 하지만 SAFE 투자자는
-부채·마진 악화·규제 리스크 같은 하방 정보를, AGGRESSIVE 투자자는 성장
-촉매·신제품·가이던스 상향 같은 상방 정보를 더 우선적으로 볼 필요가
-있습니다. 그래서 `build_retrieval_query(ticker, investor_style)`가
-`STYLE_QUERY_KEYWORDS`(SAFE/NEUTRAL/AGGRESSIVE별 키워드 리스트)를 이용해
-서로 다른 검색 쿼리 문자열을 만들고, 이 쿼리의 MiniLM 임베딩으로 유사도를
-계산하기 때문에 Retrieval 단계에서부터 성향별로 다른 기사가 상위로
-올라옵니다. 다만 어느 한쪽 정보를 완전히 배제하지는 않도록 "우선순위만
-다르게" 설계했습니다(SAFE에게 호재를 숨기거나 AGGRESSIVE에게 악재를
-숨기지 않음).
+처음에는 `build_style_query(ticker, investor_style)`가
+`"NVDA financial stability debt cash flow stability downside risk
+regulatory risk ..."`처럼 한 성향의 모든 관심사를 한 문장으로 이어붙여
+embedding했습니다. 하지만 "재무 안정성"과 "하방위험"과 "규제 리스크"는
+서로 다른 검색 의도인데, 이걸 하나의 벡터로 합치면 각 의도가 서로
+희석되면서 특정 의도 하나에 유독 강하게 매칭되는 기사도, 세 의도 모두에
+약하게 걸치는 기사도 구분 없이 비슷한 점수를 받게 됩니다. 또 "이 기사가
+왜 검색됐는지"를 설명하려면 어떤 개념이 점수에 기여했는지가 필요한데, 문장
+하나로 합쳐진 쿼리에서는 그걸 분리할 수 없습니다. 그래서 지금은
+`build_style_facet_queries(ticker, investor_style)`가 성향별로 2~3개의
+좁은 Facet Query(예: SAFE의 stability/downside_risk/external_risk)를
+따로 만들고, 각각을 독립적으로 embedding·검색한 뒤 결과를 병합합니다.
+
+### 왜 Core Query를 별도로 두었나요?
+
+개인화가 Style Query에만 의존하면, SAFE 사용자에게는 위험 관련 기사만,
+AGGRESSIVE 사용자에게는 성장 관련 기사만 검색되는 정보 편향이 생길 수
+있습니다. 하지만 실적 발표처럼 투자성향과 무관하게 모든 투자자가 반드시
+봐야 하는 뉴스도 있습니다. 그래서 `build_core_query(ticker)`가
+`investor_style` 파라미터 없이 `"earnings revenue profitability cash flow
+guidance financial performance"`라는 고정 쿼리를 만들고, 이 쿼리는 항상
+검색 대상에 포함됩니다. `retrieve_news()`가 반환하는 `core_hit_count`는
+Top-K 중 Core Query 덕분에 뽑힌 기사 수를 보여주는 diagnostic이라서,
+"핵심 실적 뉴스가 실제로 Top-K에 살아남고 있는지"를 수치로 확인할 수
+있습니다.
+
+### 왜 Facet Query를 여러 개 사용했나요?
+
+한 성향의 관심사도 사실 여러 갈래입니다. SAFE는 "재무 안정성"뿐 아니라
+"하방위험(실적 미스, 마진 악화)"과 "외부 리스크(규제, 경쟁, 공급망)"를
+모두 신경 씁니다. 이 세 가지를 하나의 문장으로 합치는 대신
+`STYLE_FACET_KEYWORDS["SAFE"]`처럼 facet마다 별도 키워드 그룹을 두고,
+`build_style_facet_queries()`가 이를 각각 독립된 쿼리로 만들어 따로
+검색합니다(SAFE/AGGRESSIVE 모두 3개, NEUTRAL도 3개). 결과적으로 한 종목에
+대해 최대 `1(core) + N(facet)`개의 쿼리가 각자 Top-N(`CANDIDATES_PER_QUERY`,
+기본 5)을 검색하고, `retrieve_news()`가 이를 article_id 기준으로 병합하며
+어떤 기사가 어떤 query(들)에서 뽑혔는지 `matched_queries`에 기록합니다.
+같은 기사가 여러 query의 Top-N에 동시에 들면 병합 시 1개 row로 합쳐지고
+`matched_queries`만 누적되므로, 여러 관점에서 일관되게 중요한 기사일수록
+자연스럽게 눈에 띕니다(뒤이은 reranking에서 유리해짐).
+
+### 왜 검색 결과를 바로 쓰지 않고 Reranking했나요?
+
+Multi-query 단계는 "후보를 넉넉히 모으는" 단계이지 최종 순위를 정하는
+단계가 아닙니다. 같은 기사가 여러 query의 Top-N에 들어도 merge 직후에는
+순서 정보가 없고, recency도 전혀 반영되지 않았습니다. 그래서 병합된 후보
+전체에 대해 `semantic_score = max(cosine(query_vec, article_vec) for 해당
+(ticker, investor_style)에서 검색한 모든 query_vec)`를 계산합니다 — 어느
+한 query의 Top-N에 든 것으로 끝나지 않고, core를 포함한 모든 query
+중에서 이 기사와 가장 가까운 값을 최종 semantic 신호로 씁니다. 여기에
+recency_score를 더해 `final_score = SEMANTIC_WEIGHT(0.8) * semantic_score
++ RECENCY_WEIGHT(0.2) * recency_score`로 재정렬한 뒤에야 Event
+Deduplication과 Top-K 선택이 이어집니다. 이 reranking이 없으면 어떤 query가
+그 기사를 "먼저" 검색했는지 같은 우연에 최종 순위가 좌우됩니다.
+
+### 투자성향별 정보 편향은 어떻게 방지했나요?
+
+세 겹의 안전장치를 둡니다. 첫째, Core Query가 investor_style과 무관하게
+항상 검색되므로 실적처럼 모두가 봐야 할 뉴스가 특정 성향에서만 사라지는
+일이 구조적으로 어렵습니다. 둘째, Facet Query는 "우선순위만" 바꾸고
+"배제"는 하지 않도록 설계했습니다 — SAFE facet 키워드 목록에 "성장"이라는
+단어가 없다고 해서 성장 뉴스가 후보 풀에서 제외되는 게 아니라, 단지 SAFE
+facet들의 Top-N에 덜 뽑힐 뿐이고 Core Query를 통해서는 여전히 후보가 될 수
+있습니다. 셋째, `core_hit_count`/`style_facet_hit_count`(둘 다
+`evaluation/retrieval_eval.py`) 같은 diagnostic으로 Top-K 구성을 계속
+관찰할 수 있게 했습니다 — Section 14에서 "Top-K 중 최소 Core 기사 N개"
+같은 rigid rule을 강제하는 대신, 우선 수치로 확인 가능하게 만드는 쪽을
+택했습니다(강제 규칙은 relevance를 해칠 수 있다는 판단).
 
 ### 왜 Ticker를 Embedding하지 않고 Metadata Filter로 사용했나요?
 
@@ -55,20 +112,27 @@ Random Projection 방식처럼) "NVDA와 관련 있다"는 사실이 벡터 공�
 양쪽 ticker의 후보 집합에 각각 포함되어야 하는데, 이는 다대다 관계
 테이블로 자연스럽게 표현되지만 벡터 결합 방식으로는 표현하기 까다롭습니다.
 그래서 `fetch_ticker_candidates()`가 SQL `WHERE ticker = ?` 조건으로 먼저
-후보를 걸러낸 뒤에만 semantic similarity를 계산하도록 했습니다.
+후보를 걸러낸 뒤에만 core/facet query들과의 semantic similarity를
+계산하도록 했습니다 — ticker는 어떤 query에도 섞여 들어가지 않습니다.
 
-### 왜 Recency를 Embedding에 넣지 않고 Ranking Score로 사용했나요?
+### 왜 Recency를 반영했나요?
 
-시간(recency)을 임베딩에 섞으면 "오늘 발행된, 별로 관련 없는 기사"가
-"1주일 전 발행된, 매우 관련 있는 기사"보다 벡터 거리상 더 가까워지는 등
-의미적 유사도와 최신성이 서로를 오염시킬 수 있고, 그 비율을 조정해도
-결과를 설명하기 어렵습니다. 그래서 `calculate_recency_score()`가
-`exp(-ln2 * days_old / HALF_LIFE_DAYS)`로 독립적인 recency score를 계산하고,
-`final_score = SEMANTIC_WEIGHT * semantic_score + RECENCY_WEIGHT * recency_score`
-(`rag_config.py`의 `SEMANTIC_WEIGHT=0.8`, `RECENCY_WEIGHT=0.2`)처럼 두 점수를
-사후에 선형 결합합니다. 이렇게 하면 "이 기사가 왜 상위에 올라왔는지"를
-의미적 유사도와 최신성으로 분리해서 설명할 수 있고, 가중치도 코드 수정
-없이 config 값 하나로 조정할 수 있습니다.
+금융 뉴스는 의미적 관련성만으로 평가할 수 없습니다. 6개월 전 기사가
+"NVDA 실적"이라는 주제와 아무리 잘 맞아도, 지금 리포트를 받는 투자자에게는
+어제 나온 관련 뉴스가 훨씬 중요합니다. 그렇다고 시간을 임베딩에 섞으면
+"오늘 발행된, 별로 관련 없는 기사"가 "1주일 전 발행된, 매우 관련 있는
+기사"보다 벡터 거리상 더 가까워지는 등 의미적 유사도와 최신성이 서로를
+오염시킬 수 있고, 그 비율을 조정해도 결과를 설명하기 어렵습니다. 그래서
+`calculate_recency_score()`가 `exp(-ln2 * days_old / HALF_LIFE_DAYS)`로
+독립적인 recency score를 계산하고, `final_score = SEMANTIC_WEIGHT *
+semantic_score + RECENCY_WEIGHT * recency_score`(`rag_config.py`의
+`SEMANTIC_WEIGHT=0.80`, `RECENCY_WEIGHT=0.20`, `HALF_LIFE_DAYS=14`)처럼
+merge 이후 두 점수를 사후에 선형 결합합니다. 이렇게 하면 "이 기사가 왜
+상위에 올라왔는지"를 semantic relevance와 최신성 두 갈래로 분리해서 설명할
+수 있고, 가중치도 코드 수정 없이 config 값 하나로 조정할 수 있습니다. 두
+값의 합이 1이 아니면 `rag_config.py`가 import 시점에 `warnings.warn()`으로
+경고하지만 retrieval 자체는 그대로 동작합니다(하드 실패시키지 않은 이유는
+최종 점수 스케일이 달라질 뿐 로직이 깨지는 건 아니기 때문).
 
 ### 왜 뉴스 중복 제거가 필요한가요?
 
@@ -95,6 +159,19 @@ headline도 다르지만 같은 실적 발표를 가리킵니다. 이건 문자�
 `assign_event_groups()`가 사후에 `event_group_id`로 묶습니다. 저장은
 그대로 두고(삭제하지 않고) 태깅만 하는 것이 핵심 차이입니다.
 
+### Multi-query candidate merge 단계에서 exact duplicate를 왜 또 검사하나요?
+
+Ingestion(`upsert_articles_normalized`/`_lookup_existing_article_id`)이
+이미 같은 canonical URL/content_hash를 가진 article은 새 article_id를
+만들지 않고 기존 row를 재사용하므로, 정상 경로에서는 candidate merge
+단계에 도달하는 두 article_id가 진짜 중복일 수 없습니다. 그럼에도
+`retrieve_news()`는 merge 직후 `_drop_exact_duplicates()`로 content_hash
+/URL 기준 재검사를 한 번 더 합니다 — content_hash가 나중에 추가된 컬럼이라
+`db.py migrate-legacy`로 backfill되기 전의 오래된 row가 섞여 있을 수
+있기 때문입니다. 정상 DB에서는 이 단계가 항상 0건을 제거해야 하고,
+`retrieve_news()`가 반환하는 `exact_duplicate_count`로 실제로 0인지 확인할
+수 있습니다.
+
 ### 왜 동일 이벤트 기사 중 하나만 Top-K에 넣나요?
 
 Top-K는 슬롯이 제한적입니다(기본 6개). 만약 6개 중 4개가 같은 실적 발표를
@@ -117,6 +194,23 @@ Top-K는 슬롯이 제한적입니다(기본 6개). 만약 6개 중 4개가 같�
 비학습(non-learned) 선형 차원 축소 기법입니다. Johnson-Lindenstrauss
 lemma에 근거해 "무작위 투영도 거리를 대략 보존한다"는 성질을 이용한
 것뿐이지, 파라미터를 데이터에 맞춰 조정하는 과정은 전혀 없습니다.
+
+### `fiqa`/`tfns` 어댑터는 정확히 어떤 데이터로 학습됐나요? earnings-call 데이터도 쓰였나요?
+
+아니요. `fiqa` 어댑터는 `FinGPT/fingpt-fiqa_qa`(금융 Q&A), `tfns` 어댑터는
+`zeroshot/twitter-financial-news-sentiment`(금융 뉴스/트윗 감성 분류)라는
+서로 다른 Hugging Face 공개 데이터셋으로 `Meta-Llama-3-8B-Instruct`를 각각
+LoRA fine-tuning한 결과입니다(과거 `fiqa-peft.ipynb`/`fingpt-peft.ipynb`
+기준 — 두 노트북은 "Clean up project for app release" 커밋에서 앱 배포용
+정리 과정 중 삭제되고 학습된 어댑터 가중치만 저장소에 남았습니다).
+Earnings-call 원문(실적발표 콜 스크립트)은 이 두 어댑터 어느 쪽 학습에도
+쓰이지 않았습니다. `Crawling`/`db`가 수집하는 뉴스 중에는 "Q1 2026 Earnings
+Call Transcript"처럼 실적발표를 다룬 *기사*가 섞여 있지만, 이건 RAG가
+검색하는 뉴스 코퍼스일 뿐 LoRA 학습 데이터와는 무관합니다. 한편
+`New_data/make_text.py`, `add_text.py`가 만드는 재무지표+뉴스 합성
+리포트 데이터셋(`finetune_dataset_*.jsonl`)은 `fiqa`/`tfns`와는 완전히
+별개의 실험이고, 이 데이터로 학습한 결과물은 저장소에 없습니다 — 세 가지
+(FiQA, TFNS, New_data 합성 데이터)를 하나로 뭉뚱그리면 안 됩니다.
 
 ### 왜 Random Projection을 최종 Retrieval에서 제거했나요?
 

@@ -62,18 +62,55 @@ def ndcg_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> float
     return dcg / idcg if idcg > 0 else 0.0
 
 
+def _average_score(items: list[dict], key: str) -> float:
+    """Diagnostic component-score average for this case's Top-K. None values
+    (recency/live fallback items, which don't carry component scores) are
+    skipped rather than treated as 0.
+    """
+    vals = [item[key] for item in items if item.get(key) is not None]
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def _query_hit_count(items: list[dict], predicate) -> int:
+    """How many Top-K items have a matched_queries label satisfying
+    `predicate` (e.g. label == "core", or label.startswith a style prefix).
+    Fallback items carry matched_queries=None and never count.
+    """
+    count = 0
+    for item in items:
+        labels = item.get("matched_queries") or []
+        if any(predicate(label) for label in labels):
+            count += 1
+    return count
+
+
 def evaluate_case(case: dict, top_k: int = TOP_K, db_path=None) -> dict:
     result = retrieve_news(case["ticker"], case["investor_style"], top_k=top_k, db_path=db_path)
-    retrieved_ids = [item["article_id"] for item in result["top_k"]]
+    items = result["top_k"]
+    retrieved_ids = [item["article_id"] for item in items]
     relevant_ids = set(case.get("relevant_article_ids") or [])
     return {
         "ticker": result["ticker"],
         "investor_style": result["investor_style"],
-        "query": result["query"],
+        "core_query": result["queries"]["core"],
+        "style_facet_queries": result["queries"]["style_facets"],
         "retrieved_ids": retrieved_ids,
         "precision@k": precision_at_k(retrieved_ids, relevant_ids, top_k),
         "recall@k": recall_at_k(retrieved_ids, relevant_ids, top_k),
         "ndcg@k": ndcg_at_k(retrieved_ids, relevant_ids, top_k),
+        "average_semantic_score": _average_score(items, "semantic_score"),
+        "average_recency_score": _average_score(items, "recency_score"),
+        # Section 20 diagnostics: how many Top-K articles were pulled in by
+        # the core query vs. by at least one style facet query, the merge
+        # pool size before/after exact-dup collapse, and how many distinct
+        # events survive into the ranked list (event diversity).
+        "core_query_hit_count": _query_hit_count(items, lambda label: label == "core"),
+        "style_facet_hit_count": _query_hit_count(items, lambda label: label != "core"),
+        "merged_candidate_count": result.get("merged_candidate_count"),
+        "exact_duplicate_count": result.get("exact_duplicate_count"),
+        "event_diversity_count": len({
+            item["event_group_id"] or f"__solo__{item['article_id']}" for item in result["ranked"]
+        }),
     }
 
 
@@ -114,7 +151,11 @@ def main() -> None:
         print(
             f"- {r['ticker']}/{r['investor_style']}: "
             f"P={r['precision@k']:.2f} R={r['recall@k']:.2f} nDCG={r['ndcg@k']:.2f} "
-            f"query={r['query']!r}"
+            f"avg_semantic={r['average_semantic_score']:.3f} avg_recency={r['average_recency_score']:.3f} "
+            f"core_hits={r['core_query_hit_count']} facet_hits={r['style_facet_hit_count']} "
+            f"merged={r['merged_candidate_count']} exact_dup={r['exact_duplicate_count']} "
+            f"event_diversity={r['event_diversity_count']} "
+            f"style_facet_queries={r['style_facet_queries']!r}"
         )
 
     tickers = sorted({c["ticker"] for c in cases})

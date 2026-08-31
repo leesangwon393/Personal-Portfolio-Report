@@ -10,8 +10,12 @@
 - yfinance 기반 종목별 재무 지표 조회
 - 변동성, 베타, MDD, HHI 기반 사용자 성향 분류 (SAFE / NEUTRAL / AGGRESSIVE)
 - 포트폴리오 시장 가치, 종목 비중, 섹터 집중도 계산
-- **투자 성향별로 다른 뉴스를 검색하는 RAG 파이프라인** (`retrieval.py`) — 같은
-  종목이라도 SAFE/NEUTRAL/AGGRESSIVE 사용자에게 다른 뉴스를 우선 검색
+- **Core Query + 여러 개의 Style Facet Query를 따로 검색해 병합하는
+  Multi-query RAG 파이프라인** (`retrieval.py`) — 모든 투자자에게 공통적으로
+  중요한 기업 핵심정보(Core Query 1개)는 항상 검색하고, 그 위에
+  SAFE/NEUTRAL/AGGRESSIVE별로 2~3개의 좁은 관점(Facet Query, 예: SAFE의
+  stability/downside_risk/external_risk)을 각각 독립적으로 검색해 후보를
+  병합함으로써 같은 종목이라도 사용자마다 다른 뉴스가 상위로 올라오게 함
 - **뉴스 원문 중복 관리**: 같은 기사가 여러 ticker에 중복 저장되지 않도록
   article ↔ ticker를 다대다 관계로 관리하고, 같은 사건을 다룬 여러 기사는
   event_group으로 묶어 Top-K가 한 이벤트로 도배되지 않게 함
@@ -56,34 +60,49 @@
                  Investor Style
            SAFE / NEUTRAL / AGGRESSIVE
                           ↓
-                 Style-aware Query
-                          │
-                          │
-Yahoo Finance News        │
-        ↓                 │
-News Crawling              │
-        ↓                 │
-GPT Factual Summary       │
-        ↓                 │
-Duplicate Removal          │
-(exact + event-level)      │
-        ↓                 │
-Canonical Article DB       │
-(SQLite: articles /        │
- article_tickers /         │
- article_embeddings)       │
-        ↓                 │
-MiniLM Embedding           │
-        ↓                 │
-Ticker Metadata Filter ←──┘
+                 Query Builder
+                          ↓
+              ┌───────────┴───────────┐
+              ↓                       ↓
+          Core Query           Style Facet Queries
+      (1개, 모든 투자자 공통,   (2~3개, SAFE/NEUTRAL/AGGRESSIVE
+       investor_style 무관)     별로 다른 좁은 관점)
+              │                       │
+              │                       │
+Yahoo Finance News                    │
+        ↓                             │
+News Crawling                          │
+        ↓                             │
+GPT Factual Summary                   │
+        ↓                             │
+Duplicate Removal (ingestion 시점,     │
+exact + event-level)                   │
+        ↓                             │
+Canonical Article DB                   │
+(SQLite: articles /                    │
+ article_tickers /                     │
+ article_embeddings)                   │
+        ↓                             │
+MiniLM Embedding                       │
+        ↓                             │
+Ticker Metadata Filter ←───────────────┘
+        │
         ↓
-Semantic Similarity
-        +
-Recency Ranking
+Per-query Top-N Retrieval
+(Core 1개 + Style Facet 2~3개, 각각 독립 검색)
+        ↓
+   Candidate Merge
+(article_id로 병합 — 여러 query에 매칭돼도 1 row,
+ matched_queries만 누적)
+        ↓
+Exact Duplicate Removal (병합 단계 defensive re-check)
+        ↓
+Semantic + Recency Reranking
+(semantic_score = 모든 query 중 최대 유사도)
         ↓
 Event Deduplication
         ↓
-Relevant Top-K News
+        Top-K
         │
         ├─────────────┐
         │             │
@@ -98,26 +117,57 @@ Financial Data   Investor Style
       Personalized Stock Report
 ```
 
-투자 성향(`SAFE`/`NEUTRAL`/`AGGRESSIVE`)은 **retrieval과 generation 양쪽에서
-모두** 사용된다: retrieval 단계에서는 `build_retrieval_query()`가 성향별로
-다른 키워드를 우선하는 검색 쿼리를 만들고, generation 단계에서는 같은 성향
-값이 LLM 프롬프트의 "Investor Style" 섹션과 분석 톤 조정에 그대로 쓰인다.
+모든 투자자에게 필요한 기업의 핵심 실적정보는 Core Query로 공통 검색하고,
+투자성향별 관심정보는 여러 Facet Query로 분리해 추가 검색하였다. 각
+query에서 확보한 후보를 병합한 뒤 semantic relevance와 recency를 기준으로
+재정렬하고 동일 이벤트 기사를 제거하여 최종 Top-K를 구성하였다.
 
-### 기존 방식 → 개선된 방식
+투자 성향(`SAFE`/`NEUTRAL`/`AGGRESSIVE`)은 **retrieval과 generation 양쪽에서
+모두** 사용된다: retrieval 단계에서는 `build_style_facet_queries()`가
+성향별로 2~3개의 Facet Query를 만들어 각각 독립적으로 검색하고(Core Query는
+`build_core_query()`가 만들며 investor_style과 무관하게 항상 동일), generation
+단계에서는 같은 성향 값이 LLM 프롬프트의 "Investor Style" 섹션과 분석 톤
+조정에 그대로 쓰인다.
+
+### 기존 구조 → 현재 구조
 
 ```text
 [기존]
 ticker 최신 뉴스 10개 (recency만 정렬) → LLM
 
-[개선]
-투자성향별 query (build_retrieval_query)
-→ ticker filter (article_tickers, metadata filter)
-→ semantic retrieval (MiniLM cosine similarity)
-→ recency ranking (별도 score, 임베딩에 넣지 않음)
-→ event dedup (같은 사건 기사 중 최고점 1개만)
-→ Top-K (기본 6개)
-→ LLM (retrieval 실패 시 기존 "최신 뉴스" 로딩이 fallback으로 재사용됨)
+[개선 1차]
+투자성향별로 하나로 합친 Style Query 1개 → semantic retrieval
+→ recency ranking → event dedup → Top-K → LLM
+
+[개선 2차 — 현재]
+Ticker
++ Investor Style
+        ↓
+Core Query(1개, 공통) + Style Facet Query(2~3개, 성향별)
+        ↓
+Multi-query Retrieval (query마다 별도 Top-N, 기본 5개씩)
+        ↓
+Candidate Merge (article_id 기준, matched_queries 기록)
+        ↓
+Exact Duplicate Removal
+        ↓
+Semantic + Recency Reranking
+  (semantic_score = max(cosine(query_vec, article_vec) for 모든 query_vec)
+   final_score = SEMANTIC_WEIGHT(0.8)×semantic_score + RECENCY_WEIGHT(0.2)×recency_score)
+        ↓
+Event Deduplication (같은 사건 기사 중 최고 Final Score 1개만)
+        ↓
+Top-K (기본 6개)
+        ↓
+LLM (retrieval 실패 시 기존 "최신 뉴스" 로딩이 fallback으로 재사용됨)
 ```
+
+하나의 긴 Style Query에 여러 검색 의도(안정성 + 하방위험 + 규제리스크 등)를
+몰아넣으면 embedding 상에서 각 의도가 서로 희석될 수 있고, 어떤 기사가 어떤
+의도 때문에 검색됐는지도 해석하기 어렵다. 그래서 SAFE/NEUTRAL/AGGRESSIVE
+각각을 2~3개의 독립된 Facet Query로 나눠 따로 검색한 뒤 후보를 병합하는
+방식을 쓴다. 이 방식이 하나로 합치지 않는 이유는
+[`docs/INTERVIEW_QNA.md`](docs/INTERVIEW_QNA.md)에 정리되어 있다.
 
 **주의**: SQLite에 임베딩(BLOB)을 저장해 코사인 유사도를 직접 계산하는
 구조이며, FAISS/Chroma/Pinecone 같은 별도 Vector DB 제품은 쓰지 않는다.
@@ -165,6 +215,32 @@ FMP_API_KEY=
 train_and_inference/fiqa/model/
 train_and_inference/tfns/model/
 ```
+
+### Fine-tuning 데이터셋
+
+두 어댑터는 서로 다른 공개 데이터셋으로 `Meta-Llama-3-8B-Instruct`를 각각
+LoRA fine-tuning한 결과입니다(학습 노트북은 `9f20ae3` "Clean up project for
+app release"에서 앱 배포용으로 정리하며 저장소에서 제거했고, 결과 가중치만
+남겼습니다 — 아래는 그 이전 커밋 히스토리에 남아있던 `fiqa-peft.ipynb` /
+`fingpt-peft.ipynb` 기준입니다):
+
+| Adapter | 데이터셋 | 성격 |
+| --- | --- | --- |
+| `fiqa` | [`FinGPT/fingpt-fiqa_qa`](https://huggingface.co/datasets/FinGPT/fingpt-fiqa_qa) | 금융 Q&A (FiQA 기반) |
+| `tfns` | [`zeroshot/twitter-financial-news-sentiment`](https://huggingface.co/datasets/zeroshot/twitter-financial-news-sentiment) | 금융 뉴스/트윗 감성 분류 (Twitter Financial News Sentiment) |
+
+**earnings-call(실적발표 콜) 원문 데이터는 두 어댑터 어디의 학습에도 쓰이지
+않았습니다.** `Crawling`/`db`가 수집하는 뉴스 중에는 "Q1 2026 Earnings Call
+Transcript"처럼 실적발표를 다룬 *기사*가 섞여 있지만, 이는 RAG가 검색하는
+뉴스 코퍼스의 일부일 뿐 LoRA 학습 데이터가 아닙니다.
+
+`New_data/make_text.py`, `New_data/add_text.py`는 별도의 실험으로, 재무
+지표(`NASDAQ100_finance.csv`)와 뉴스(`NASDAQ100_news.csv`)를 템플릿으로
+합성한 리포트 스타일 JSONL(`finetune_dataset_expanded.jsonl` /
+`finetune_dataset_augmented.jsonl`)을 만듭니다. 이 스크립트로 만든 데이터는
+위 두 어댑터를 만드는 데 쓰이지 않았고, 저장소에 학습 결과(가중치)도
+포함되어 있지 않습니다 — 즉 `fiqa`/`tfns` 어댑터와는 독립적인, 실행되지
+않은 아이디어 단계의 스크립트입니다.
 
 로컬 추론은 Hugging Face에서 base model을 내려받아 위 어댑터를 붙여 실행합니다. `HF_TOKEN`이 필요합니다.
 
@@ -247,9 +323,24 @@ python3 evaluation/retrieval_eval.py --labels evaluation/sample_relevance_labels
 ```
 
 Precision@K / Recall@K / nDCG@K를 (ticker, investor_style) 케이스별로
-계산하고, 같은 ticker의 SAFE vs AGGRESSIVE Top-K가 얼마나 겹치는지 보여주는
-Jaccard overlap도 함께 출력합니다(이건 품질 지표가 아니라 개인화가 실제로
-적용됐는지 확인하는 diagnostic입니다).
+계산합니다. 추가로 다음 diagnostic을 케이스별로 함께 출력합니다(모두 품질
+지표가 아니라 multi-query 파이프라인이 실제로 의도대로 동작하는지 확인하는
+용도입니다):
+
+- `average_semantic_score` / `average_recency_score` — Top-K가 semantic
+  relevance와 recency 중 어디에 더 의존해 뽑혔는지
+- `core_query_hit_count` / `style_facet_hit_count` — Top-K 중 Core Query
+  때문에 뽑힌 기사 수 / Style Facet Query 때문에 뽑힌 기사 수 (핵심 실적
+  정보가 Top-K에서 밀려나지 않았는지 확인하는 diagnostic, Top-K 전체가
+  facet에서만 나온다면 정보 편향 신호)
+- `merged_candidate_count` / `exact_duplicate_count` — multi-query
+  candidate merge 이후 후보 수와, 그중 exact-duplicate로 제거된 수
+- `event_diversity_count` — reranked 후보 중 서로 다른 event_group 수
+
+같은 ticker의 SAFE vs AGGRESSIVE Top-K가 얼마나 겹치는지 보여주는 Jaccard
+overlap도 함께 출력합니다. 겹침이 낮을수록 무조건 좋은 것은 아닙니다 —
+중요한 실적 뉴스는 Core Query 덕분에 여러 성향에 공통으로 뽑히는 것이
+오히려 정상입니다.
 
 ## Generation Evaluation & Base vs LoRA 비교
 
@@ -269,12 +360,17 @@ python3 evaluation/compare_adapters.py --ticker NVDA --style AGGRESSIVE
 python3 -m unittest discover -s tests -p "test_*.py"
 ```
 
-DB dedup, event dedup, retrieval(ticker filter/style query/semantic
-similarity/recency/final score/event dedup/fallback), inference prompt
-구성(RAG Top-K가 실제로 prompt에 들어가는지, investor style 정규화,
-financial data 포함 여부, chat template 형태 유지)을 다룹니다. Sentence
-embedding 모델은 네트워크/모델 다운로드 없이 `tests/fake_embedder.py`의
-결정론적(deterministic) hashing embedder로 mocking되어 있습니다.
+DB dedup, event dedup, retrieval(ticker filter / core query가 모든 style에서
+동일한지 / style facet query가 style별로 여러 개 다르게 생성되는지 / 각
+query가 별도로 embedding되어 query마다 Top-N이 나오는지 / 동일 article이
+여러 query에 매칭돼도 candidate merge 시 한 row로 병합되는지 / exact
+duplicate가 content_hash 기준으로 제거되는지 / semantic score = 모든 query
+중 최대 유사도인지 / recency / final score = semantic×recency 가중합 /
+event dedup / fallback), inference prompt 구성(RAG Top-K가 실제로 prompt에
+들어가는지, investor style 정규화, financial data 포함 여부, chat template
+형태 유지)을 다룹니다. Sentence embedding 모델은 네트워크/모델 다운로드
+없이 `tests/fake_embedder.py`의 결정론적(deterministic) hashing embedder로
+mocking되어 있습니다.
 
 ## 이번 개선 요약 (면접용)
 

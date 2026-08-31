@@ -37,6 +37,7 @@ ANALYSIS INSTRUCTIONS:
 - Do not hallucinate numbers that are not in Facts.
 - Do not state uncertain or unverified information as fact.
 - Adjust the focus and tone strictly based on the investor's style.
+- Consider both growth factors and risk factors in the retrieved news, even when the investor's style leans toward one side — personalization is about emphasis, not omission.
 - Do NOT provide direct financial advice or buy/sell recommendations.
 
 OUTPUT REPORT TEMPLATE
@@ -167,16 +168,22 @@ def load_news(ticker: str, investor_style: str, top_k: int = TOP_K, debug: bool 
     items = result["top_k"]
 
     if debug:
+        queries = result.get("queries") or {}
         print(
             f"[retrieval] ticker={result['ticker']} style={result['investor_style']} "
             f"source={result['source']} lookback_days={result['lookback_days']} "
-            f"query={result['query']!r}",
+            f"merged={result.get('merged_candidate_count')} "
+            f"exact_dup={result.get('exact_duplicate_count')} "
+            f"core_hit={result.get('core_hit_count')}\n"
+            f"  core_query={queries.get('core')!r}\n"
+            f"  style_facet_queries={queries.get('style_facets')!r}",
             file=sys.stderr,
         )
         for i, item in enumerate(items, 1):
             print(
-                f"  [{i}] final={item.get('final_score')} sem={item.get('semantic_score')} "
-                f"rec={item.get('recency_score')} event={item.get('event_group_id')} "
+                f"  [{i}] final={item.get('final_score')} semantic={item.get('semantic_score')} "
+                f"rec={item.get('recency_score')} matched={item.get('matched_queries')} "
+                f"event={item.get('event_group_id')} "
                 f"{str(item.get('pubdate'))[:10]} | {item.get('headline')}",
                 file=sys.stderr,
             )
