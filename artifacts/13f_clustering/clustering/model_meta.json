@@ -1,0 +1,12 @@
+{
+  "method": "kmeans",
+  "k": 3,
+  "scaler_kind": "robust",
+  "random_seed": 42,
+  "features": [
+    "volatility",
+    "mdd",
+    "beta",
+    "sector_hhi"
+  ]
+}

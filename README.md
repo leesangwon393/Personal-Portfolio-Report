@@ -28,7 +28,9 @@
 ├── data/                          # Financial metrics update scripts
 ├── db/                            # News database and summarization pipeline
 ├── classification/                # Portfolio classification utilities
-├── srisk_result/                  # Risk metric calculation and market data
+├── srisk_result/                  # Risk metric calculation and market data (single user portfolio)
+├── sec13f/                        # SEC 13F risk-clustering pipeline (institutional portfolios)
+├── scripts/                       # run_13f_clustering.py CLI entrypoint
 ├── static/                        # Frontend JavaScript/CSS
 ├── templates/                     # Flask templates
 ├── train_and_inference/           # NASDAQ metrics and inference helpers
@@ -98,3 +100,27 @@ python3 train_and_inference/earnings_call_lora.py train
 ```
 
 수집 결과와 어댑터는 `local_data/earnings_calls/`에 저장되며 `.gitignore`로 제외됩니다. 이 학습은 CEO/CFO 발화 기반의 금융 도메인 적응용이며, 개인화 리포트 생성에는 재무·뉴스·투자성향을 포함한 별도 instruction 데이터셋이 필요합니다.
+
+## 13F 공개 주식 포트폴리오 기반 위험 운용성향 (기관투자자 군집화)
+
+`app.py`의 개인 포트폴리오 분류기(`srisk_result/`)와는 별도로, SEC EDGAR에
+공개된 기관투자자 13F-HR 신고 데이터로 실제 100개 포트폴리오를 수집해
+Volatility / MDD / Beta / Sector HHI 4개 위험지표를 계산하고, **비지도
+군집화**로 DEFENSIVE / BALANCED / AGGRESSIVE 세 군집을 사후 해석하는
+파이프라인입니다. 사람이 직접 라벨링하지 않으며, 군집 이름은 학습용
+정답이 아니라 군집 중심값을 사후에 해석해 붙인 이름입니다.
+
+```bash
+python scripts/run_13f_clustering.py \
+  --quarter 2026-06-30 \
+  --num-portfolios 100 \
+  --lookback-days 252 \
+  --output-dir artifacts/13f_clustering
+
+python -m pytest test_13f_clustering.py -v
+```
+
+방법론(데이터 출처, 선정 기준, 13F의 한계, 정규화 방식, K=3 선택 근거,
+환경변수, 결과 해석 시 주의사항)은
+[`docs/13F_CLUSTERING.md`](docs/13F_CLUSTERING.md)에, 실제 실행 결과는
+`artifacts/13f_clustering/report.md`에 정리되어 있습니다.

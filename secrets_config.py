@@ -51,3 +51,20 @@ def get_fmp_api_key(required: bool = False) -> str | None:
         get_secret("FMP_API_KEY", required=False)
         or get_secret("FINANCIAL_MODELING_PREP_API_KEY", required=required)
     )
+
+
+def get_sec_user_agent(required: bool = False) -> str | None:
+    """SEC EDGAR requires a descriptive User-Agent with contact info on every
+    request (https://www.sec.gov/os/webmaster-faq#developers). Set
+    SEC_USER_AGENT="YourApp yourname@example.com" in .env; sec13f/edgar.py
+    falls back to a generic default if unset (works, but SEC recommends a
+    real contact address).
+    """
+    return get_secret("SEC_USER_AGENT", required=required)
+
+
+def get_openfigi_api_key(required: bool = False) -> str | None:
+    """Optional. Without a key, OpenFIGI's /v3/mapping endpoint is still
+    usable but rate-limited more strictly (see sec13f/mapping.py).
+    """
+    return get_secret("OPENFIGI_API_KEY", required=required)

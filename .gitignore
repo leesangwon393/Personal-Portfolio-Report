@@ -14,6 +14,12 @@ my_srisk_result.csv
 *.backup_*.csv
 *_failed_*.csv
 
+# 13F risk-clustering pipeline: raw SEC bulk ZIP/TSV downloads + per-ticker
+# price/mapping/sector caches (large, re-fetchable from SEC/OpenFIGI/Yahoo)
+# are not committed; processed/clustering/figures/report.md/raw/filings ARE
+# committed as the deliverable + reproducibility record.
+artifacts/13f_clustering/cache/
+
 # Local databases and large model artifacts
 *.sqlite
 *.sqlite3
