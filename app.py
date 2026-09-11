@@ -13,6 +13,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 from flask import Flask, jsonify, render_template, request
+from retrieval import normalize_investor_style, retrieve_news_with_fallback
+from news_paths import get_news_db_path
 
 from srisk_result.analyze_portfolio_risk import (
     compute_srisk_from_portfolio,
@@ -24,7 +26,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 METRICS_PATH = ROOT_DIR / "srisk_result" / "us_market_metrics_sp500_nasdaq100.csv"
 WALLSTREET_PATH = ROOT_DIR / "srisk_result" / "wallstreet_srisk_results.csv"
 FINANCIAL_METRICS_PATH = ROOT_DIR / "train_and_inference" / "NASDAQ100_metrics.csv"
-NEWS_DB_PATH = ROOT_DIR / "db" / "news.db"
+NEWS_DB_PATH = get_news_db_path()
 
 DEFAULT_PORTFOLIO = "AAPL 10, MSFT 8, NVDA 4, AMZN 6"
 PRICE_CACHE_TTL = 60
@@ -261,13 +263,11 @@ def fetch_live_news(ticker: str, limit: int = 3) -> list[dict]:
                     "summary": summary,
                     "pubdate": pubdate,
                     "source": "Yahoo Finance",
+                    "url": item.findtext("link") or "",
                 }
             )
-        if len(items) >= limit:
-            break
-
     NEWS_CACHE[ticker] = (items, now)
-    return items
+    return items[:limit]
 
 
 def load_recent_news_from_db(tickers: list[str], limit_per_ticker: int = 3) -> dict[str, list[dict]]:
@@ -364,7 +364,13 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
     finance_by_ticker = (
         finance_df.set_index("Ticker") if not finance_df.empty and "Ticker" in finance_df else pd.DataFrame()
     )
-    news_by_ticker = load_recent_news(tickers)
+    style = normalize_investor_style(risk_result.get("category"))
+    retrieval_by_ticker = {
+        ticker: retrieve_news_with_fallback(
+            ticker, style, top_k=3, db_path=NEWS_DB_PATH,
+            live_fallback_fn=fetch_live_news,
+        ) for ticker in tickers
+    }
     holding_by_ticker = {row["Ticker"]: row for row in risk_result["holdings"]}
 
     reports = []
@@ -379,7 +385,8 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
         except Exception:
             pass
         holding = holding_by_ticker.get(ticker, {})
-        news_items = news_by_ticker.get(ticker, [])
+        selection = retrieval_by_ticker[ticker]
+        news_items = selection["top_k"]
         sector = holding.get("Sector") or (finance_row.get("Sector") if finance_row is not None else "Unknown")
 
         news_lines = [
@@ -387,6 +394,8 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
                 "headline": item.get("headline") or "Untitled",
                 "summary": item.get("summary") or "",
                 "pubdate": str(item.get("pubdate") or "")[:10],
+                "url": item.get("url"),
+                "matched_queries": item.get("matched_queries"),
             }
             for item in news_items
         ]
@@ -395,6 +404,17 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
             news_impact = "최신 뉴스는 실적, 수요, 정책 또는 산업 변화가 해당 종목의 단기 리스크 해석에 반영될 수 있음을 보여줍니다."
         else:
             news_impact = "뉴스 조회 결과가 없어 현재는 재무 지표와 포트폴리오 리스크 중심으로 판단합니다."
+
+        if news_items and selection["source"] in {"rag", "live_semantic", "db_semantic", "archive_semantic"}:
+            focus = {"SAFE": "현금흐름·안정성·하방 위험", "NEUTRAL": "성장·수익성·위험의 균형", "AGGRESSIVE": "성장·신제품·사업 확장"}[style]
+            news_impact = f"기업 공통 실적 주제와 {focus} 관련성을 함께 고려해 뉴스를 선별했습니다."
+        elif news_items:
+            news_impact = "성향별 뉴스 선별을 사용할 수 없어 수집된 최신 뉴스를 표시합니다."
+
+        dates = [pd.to_datetime(item.get("pubdate"), utc=True, errors="coerce") for item in news_items]
+        dates = [date for date in dates if pd.notna(date)]
+        if dates and (pd.Timestamp.now(tz="UTC") - max(dates)).days > 60:
+            news_impact += f" 보관된 과거 뉴스입니다(선별 기사 중 최신 날짜: {max(dates):%Y-%m-%d})."
 
         reports.append(
             {
@@ -410,6 +430,8 @@ def build_reports(portfolio: dict[str, float], risk_result: dict) -> list[dict]:
                 "financial": _financial_notes(finance_row),
                 "news_impact": news_impact,
                 "news": news_lines,
+                "investor_style": style,
+                "news_selection": {"source": selection["source"], "queries": selection["queries"]},
                 "outlook": "포트폴리오 전체 성향과 함께 변동성, 베타, 섹터 집중도를 같이 확인하는 것이 좋습니다.",
             }
         )

@@ -24,6 +24,7 @@ artifacts/13f_clustering/cache/
 *.sqlite
 *.sqlite3
 *.db
+!db/news.db
 *.pt
 *.pth
 *.bin

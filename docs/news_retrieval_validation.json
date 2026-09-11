@@ -1,0 +1,393 @@
+{
+  "snapshot_sha256": "f4dd0d8554b3cdc6cee197ee37be2498c0fb4b1f5e411c00e0b07cf5d5cce496",
+  "database": {
+    "article_count": 1113,
+    "original_index_count": 1113,
+    "new_embedding_count": 1113,
+    "ticker_count": 101,
+    "date_range": [
+      "2025-10-31 00:00:00+00:00",
+      "2025-11-13 00:00:00+00:00"
+    ],
+    "original_articles_unchanged": true,
+    "original_vectors_unchanged": true
+  },
+  "comparisons": [
+    {
+      "ticker": "NVDA",
+      "safe_aggressive_jaccard": 0.5,
+      "styles": {
+        "SAFE": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "75adc4955281fe21825b2594a11484cb1ec2c01f",
+              "headline": "Nvidia's Earnings Are Almost Here. Investors Are Already Worried About the AI Rally.",
+              "pubdate": "2025-11-13 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.3908647210833782
+            },
+            {
+              "article_id": "8f10e5f807edda21cb6211bb07fa5347fb9b659e",
+              "headline": "Jim Cramer Is Surprised By Amazon.com (AMZN) Owning NVIDIA GPUs",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.36631310157459673
+            },
+            {
+              "article_id": "fa2861ae9ab1fc2d208842a1199630d62e926b89",
+              "headline": "Jim Cramer Comments On Michael Burry’s NVIDIA (NVDA) Short Position",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_downside_risk"
+              ],
+              "final_score": 0.3662592428175777
+            }
+          ]
+        },
+        "NEUTRAL": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "8f10e5f807edda21cb6211bb07fa5347fb9b659e",
+              "headline": "Jim Cramer Is Surprised By Amazon.com (AMZN) Owning NVIDIA GPUs",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.38743653468769423
+            },
+            {
+              "article_id": "8828b3fc266e26af146cce2d6ebbcdda0f27572a",
+              "headline": "Investors ask whether $5 trillion Nvidia can sustain our faith in AI",
+              "pubdate": "2025-11-03 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth"
+              ],
+              "final_score": 0.3862965969449488
+            },
+            {
+              "article_id": "75adc4955281fe21825b2594a11484cb1ec2c01f",
+              "headline": "Nvidia's Earnings Are Almost Here. Investors Are Already Worried About the AI Rally.",
+              "pubdate": "2025-11-13 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.37754127153938527
+            }
+          ]
+        },
+        "AGGRESSIVE": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "8828b3fc266e26af146cce2d6ebbcdda0f27572a",
+              "headline": "Investors ask whether $5 trillion Nvidia can sustain our faith in AI",
+              "pubdate": "2025-11-03 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_catalyst"
+              ],
+              "final_score": 0.40790342372717475
+            },
+            {
+              "article_id": "8f10e5f807edda21cb6211bb07fa5347fb9b659e",
+              "headline": "Jim Cramer Is Surprised By Amazon.com (AMZN) Owning NVIDIA GPUs",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_catalyst",
+                "aggressive_positive_momentum"
+              ],
+              "final_score": 0.40258546046894356
+            },
+            {
+              "article_id": "75adc4955281fe21825b2594a11484cb1ec2c01f",
+              "headline": "Nvidia's Earnings Are Almost Here. Investors Are Already Worried About the AI Rally.",
+              "pubdate": "2025-11-13 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_catalyst"
+              ],
+              "final_score": 0.38550664553230424
+            }
+          ]
+        }
+      }
+    },
+    {
+      "ticker": "AAPL",
+      "safe_aggressive_jaccard": 1.0,
+      "styles": {
+        "SAFE": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "702c7903fa64fff2eb8e2beef244a1562eea750d",
+              "headline": "Exploring Apple's True Worth as Stock Surges on AI and Vision Pro Advances",
+              "pubdate": "2025-11-03 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.47032589838874617
+            },
+            {
+              "article_id": "1c77c2be3d44096e9a8371e231013be551b82b3d",
+              "headline": "Apple (AAPL) Delivers Solid Beat — Jefferies Softens Bearish Stance",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.404666508739563
+            },
+            {
+              "article_id": "8414d1b9005a9a35912cb9d0ac2bbed6392a5642",
+              "headline": "Here's What We Learned From Big Tech Earnings Last Week",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_downside_risk"
+              ],
+              "final_score": 0.36666849548181946
+            }
+          ]
+        },
+        "NEUTRAL": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "702c7903fa64fff2eb8e2beef244a1562eea750d",
+              "headline": "Exploring Apple's True Worth as Stock Surges on AI and Vision Pro Advances",
+              "pubdate": "2025-11-03 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.491946354330201
+            },
+            {
+              "article_id": "1c77c2be3d44096e9a8371e231013be551b82b3d",
+              "headline": "Apple (AAPL) Delivers Solid Beat — Jefferies Softens Bearish Stance",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.4410829434249749
+            },
+            {
+              "article_id": "8414d1b9005a9a35912cb9d0ac2bbed6392a5642",
+              "headline": "Here's What We Learned From Big Tech Earnings Last Week",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.4349333653304925
+            }
+          ]
+        },
+        "AGGRESSIVE": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "702c7903fa64fff2eb8e2beef244a1562eea750d",
+              "headline": "Exploring Apple's True Worth as Stock Surges on AI and Vision Pro Advances",
+              "pubdate": "2025-11-03 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_catalyst",
+                "aggressive_positive_momentum"
+              ],
+              "final_score": 0.4703258983887451
+            },
+            {
+              "article_id": "1c77c2be3d44096e9a8371e231013be551b82b3d",
+              "headline": "Apple (AAPL) Delivers Solid Beat — Jefferies Softens Bearish Stance",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_catalyst",
+                "aggressive_positive_momentum"
+              ],
+              "final_score": 0.46193186507751965
+            },
+            {
+              "article_id": "8414d1b9005a9a35912cb9d0ac2bbed6392a5642",
+              "headline": "Here's What We Learned From Big Tech Earnings Last Week",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_positive_momentum"
+              ],
+              "final_score": 0.4129487173977648
+            }
+          ]
+        }
+      }
+    },
+    {
+      "ticker": "MSFT",
+      "safe_aggressive_jaccard": 0.5,
+      "styles": {
+        "SAFE": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "d621d8bf02b01871f0286b26eb3ff904b19ce1eb",
+              "headline": "Assessing Microsoft’s Value After Recent 4.1% Pullback and AI Developments",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.41889310054462436
+            },
+            {
+              "article_id": "5e81302336ca65cadfa56d213f6f3230d545bef8",
+              "headline": "Why Rapid7 (RPD) Is Down 23.3% After Cautious Guidance and CFO Appointment Despite Strong Q3",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk"
+              ],
+              "final_score": 0.40163030795734417
+            },
+            {
+              "article_id": "e33066a0023833c12dbd796a78044bc3e0fb1e04",
+              "headline": "Why the Narrative Around Microsoft Is Evolving Amid Strong Analyst Optimism and Emerging Cloud Risks",
+              "pubdate": "2025-11-07 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.4002991431363515
+            }
+          ]
+        },
+        "NEUTRAL": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "d621d8bf02b01871f0286b26eb3ff904b19ce1eb",
+              "headline": "Assessing Microsoft’s Value After Recent 4.1% Pullback and AI Developments",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.490492613270249
+            },
+            {
+              "article_id": "e33066a0023833c12dbd796a78044bc3e0fb1e04",
+              "headline": "Why the Narrative Around Microsoft Is Evolving Amid Strong Analyst Optimism and Emerging Cloud Risks",
+              "pubdate": "2025-11-07 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "neutral_growth",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.4188339703508842
+            },
+            {
+              "article_id": "a31ee1941fde2ebab7c17a0ec3d91b3d6504a3d6",
+              "headline": "Should You Buy Microsoft (MSFT) For Long-Term AI Gains?",
+              "pubdate": "2025-11-09 00:00:00+00:00",
+              "matched_queries": [
+                "neutral_growth",
+                "neutral_profitability_valuation",
+                "neutral_risk_outlook"
+              ],
+              "final_score": 0.40265207712717493
+            }
+          ]
+        },
+        "AGGRESSIVE": {
+          "source": "archive_semantic",
+          "articles": [
+            {
+              "article_id": "e33066a0023833c12dbd796a78044bc3e0fb1e04",
+              "headline": "Why the Narrative Around Microsoft Is Evolving Amid Strong Analyst Optimism and Emerging Cloud Risks",
+              "pubdate": "2025-11-07 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_growth",
+                "aggressive_catalyst",
+                "aggressive_positive_momentum"
+              ],
+              "final_score": 0.4314092115101839
+            },
+            {
+              "article_id": "d621d8bf02b01871f0286b26eb3ff904b19ce1eb",
+              "headline": "Assessing Microsoft’s Value After Recent 4.1% Pullback and AI Developments",
+              "pubdate": "2025-11-08 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "aggressive_positive_momentum"
+              ],
+              "final_score": 0.41889310054462314
+            },
+            {
+              "article_id": "11e1822cf25f800bc41ca6e66d4801f6eb05ebb3",
+              "headline": "Windows president told 'Stop this nonsense. No one wants this'",
+              "pubdate": "2025-11-13 00:00:00+00:00",
+              "matched_queries": [
+                "aggressive_catalyst"
+              ],
+              "final_score": 0.40541340479438415
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "limitation": "Different article selections demonstrate working personalization, not relevance or investment quality.",
+  "dashboard": {
+    "status": 200,
+    "news_count": 3,
+    "source": "archive_semantic",
+    "historical_news_notice": true
+  }
+}

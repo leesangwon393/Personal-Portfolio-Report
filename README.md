@@ -7,6 +7,7 @@
 - 보유 종목과 수량 입력
 - Yahoo Finance 기반 실시간 가격 조회
 - Yahoo Finance RSS 기반 최신 뉴스 조회
+- 사용자 성향별 뉴스 선별: 공통 실적 주제 + SAFE/NEUTRAL/AGGRESSIVE별 관심 주제를 검색해 리포트에 반영
 - yfinance 기반 종목별 재무 지표 조회
 - 변동성, 베타, MDD, HHI 기반 사용자 성향 분류
 - 포트폴리오 시장 가치, 종목 비중, 섹터 집중도 계산
@@ -69,7 +70,7 @@ HF_TOKEN=
 FMP_API_KEY=
 ```
 
-`.env`, 로컬 DB, 백업 CSV는 Git에 올리지 않도록 `.gitignore`에 포함되어 있습니다. 튜닝된 LoRA 어댑터 가중치만 예외로 저장소에 포함합니다.
+`.env`, 작업 DB, 백업 CSV는 Git에서 제외합니다. 원본 뉴스 스냅샷 `db/news.db`와 튜닝된 LoRA 어댑터 가중치는 재현을 위해 저장소에 포함합니다.
 
 ## Tuned Model Inference
 
@@ -88,6 +89,45 @@ python3 model_inference.py --ticker TSLA --style AGGRESSIVE --adapter tfns
 ```
 
 `model_inference.py`는 저장된 뉴스 DB가 없으면 Yahoo Finance RSS에서 최신 뉴스를 가져오고, CSV 지표와 yfinance 재무 스냅샷을 함께 사용해 리포트를 생성합니다.
+
+## 사용자 성향별 뉴스 검색
+
+대시보드는 현재 위험 분류기의 `category`를, 로컬 추론은 `--style`을
+`retrieval.py`에 전달합니다. 같은 종목의 기사 후보에서 기업 공통 실적 쿼리와
+성향별 세부 쿼리를 각각 검색한 후 관련성 80% + 최신성 20%로 순위를 정합니다.
+이 가중치는 검증된 최적값이 아닌 초기 설정이며 `rag_config.py`에서 조정합니다.
+
+- SAFE: 현금흐름, 안정성, 하방·외부 위험
+- NEUTRAL: 성장과 수익성, 위험의 균형
+- AGGRESSIVE: 성장, 신제품, 사업 확장과 촉매
+
+DB 임베딩이 있으면 재사용합니다. 없으면 DB의 최근 기사 후보를 임베딩하고,
+DB 기사도 없으면 RSS 후보를 가져와 같은 방식으로 선별합니다. 후보 수는
+최소 30개를 요청하되 실제 RSS 제공량에 따라 줄어들 수 있습니다. 모델 로딩이
+실패하면 최신 뉴스로 대체하고 대시보드에 성향별 선별을 사용할 수 없다고 표시합니다.
+API 응답의 `reports[].news_selection.source`로도 적용 여부를 확인할 수 있습니다
+(`rag`, `db_semantic`, `live_semantic`, `archive_semantic`은 성향별 검색 적용).
+
+첫 의미 검색 시 `sentence-transformers/all-MiniLM-L6-v2` 다운로드가 필요할 수 있습니다.
+원본 저장소에서 가져온 `db/news.db`는 2025-10-31~2025-11-13의 기사·요약
+1,113건과 기존 인덱스를 담은 스냅샷입니다. 아래 준비 명령은 원본을 보존하고
+`local_data/news/db/news.db`에 작업 복사본과 새 MiniLM 검색 인덱스를 만듭니다.
+재실행하면 작업 DB를 보존하면서 빠진 임베딩을 채웁니다. 앱·모델 추론·수집기는
+이 작업 경로를 공유하며, `NEWS_DB_BASE` 환경변수로 기본 디렉터리를 변경할 수 있습니다.
+준비 전에는 원본 스냅샷의 기사·요약을 읽어 후보를 임베딩합니다.
+검색 기간 밖의 저장 기사는 `archive_semantic`으로 표시하고 대시보드에 과거 뉴스임을 명시합니다.
+
+```bash
+python3 scripts/prepare_news_db.py
+python3 retrieval.py --ticker NVDA --compare-styles --lookback-days 400
+python3 model_inference.py --ticker NVDA --style SAFE --debug
+python3 -m unittest discover -s tests -v
+```
+
+공통 쿼리도 후보 검색에 참여하지만 최종 목록에 공통 기사가 반드시 포함되도록
+할당량을 강제하지는 않습니다. 성향별 기사가 항상 달라지는 것도 아닙니다.
+자동 테스트는 가짜 임베딩으로 흐름을 검증하며, 실제 뉴스 검색 품질은 별도 평가가 필요합니다.
+두 저장소의 비교·가져온 항목·실제 DB 검증 결과는 [통합 기록](docs/REPOSITORY_INTEGRATION.md)에 정리합니다.
 
 ## Earnings-call LoRA pipeline
 
