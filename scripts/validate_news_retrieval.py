@@ -24,10 +24,11 @@ def validate() -> dict:
         preserved = working.execute('SELECT id, headline, ticker, pubdate, summary FROM articles ORDER BY id').fetchall()
         vectors = original.execute('SELECT id, ivect FROM integrated_index ORDER BY id').fetchall()
         preserved_vectors = working.execute('SELECT id, ivect FROM integrated_index ORDER BY id').fetchall()
-        assert articles == preserved, 'Article content changed'
-        assert vectors == preserved_vectors, 'Original vectors changed'
+        assert set(articles).issubset(set(preserved)), 'Source article content changed or disappeared'
+        assert set(vectors).issubset(set(preserved_vectors)), 'Original vectors changed or disappeared'
         stats = {
             'article_count': len(articles), 'original_index_count': len(vectors),
+            'working_article_count': len(preserved),
             'new_embedding_count': working.execute('SELECT count(*) FROM article_embeddings').fetchone()[0],
             'ticker_count': original.execute('SELECT count(DISTINCT ticker) FROM articles').fetchone()[0],
             'date_range': original.execute('SELECT min(pubdate), max(pubdate) FROM articles').fetchone(),

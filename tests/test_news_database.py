@@ -40,11 +40,39 @@ class TestNewsDatabase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "runtime.db"
             with sqlite3.connect(target) as conn:
-                conn.execute("CREATE TABLE original (value TEXT)")
+                conn.execute("CREATE TABLE articles (id TEXT PRIMARY KEY, headline TEXT, ticker TEXT, pubdate TEXT, summary TEXT)")
+            source = Path(directory) / 'source.db'
+            source.write_bytes(target.read_bytes())
             before = target.read_bytes()
             with patch('db.db.migrate_legacy_articles', side_effect=RuntimeError('migration failed')):
                 with self.assertRaises(RuntimeError):
-                    prepare(Path(directory) / 'unused.db', target, model=FakeEmbedder())
+                    prepare(source, target, model=FakeEmbedder())
+            self.assertEqual(target.read_bytes(), before)
+
+    def test_merge_adds_source_rows_and_retains_working_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = [Path(directory) / name for name in ('source.db', 'runtime.db')]
+            for path, article_id in ((source, 'source'), (target, 'working')):
+                with sqlite3.connect(path) as conn:
+                    conn.execute("CREATE TABLE articles (id TEXT PRIMARY KEY, headline TEXT, ticker TEXT, pubdate TEXT, summary TEXT)")
+                    conn.execute("INSERT INTO articles VALUES (?,?,'NVDA','2025-11-13','Cash flow')", (article_id, article_id))
+            result = prepare(source, target, model=FakeEmbedder())
+            self.assertEqual(result['imported_articles'], 1)
+            self.assertEqual(result['articles'], 2)
+            result = prepare(source, target, model=FakeEmbedder())
+            self.assertEqual(result['imported_articles'], 0)
+            self.assertEqual(result['articles'], 2)
+
+    def test_conflicting_ids_fail_without_changing_working_db(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = [Path(directory) / name for name in ('source.db', 'runtime.db')]
+            for path, headline in ((source, 'source'), (target, 'changed')):
+                with sqlite3.connect(path) as conn:
+                    conn.execute("CREATE TABLE articles (id TEXT PRIMARY KEY, headline TEXT, ticker TEXT, pubdate TEXT, summary TEXT)")
+                    conn.execute("INSERT INTO articles VALUES ('same',?,'NVDA','2025-11-13','Cash flow')", (headline,))
+            before = target.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'Conflicting article ID'):
+                prepare(source, target, model=FakeEmbedder())
             self.assertEqual(target.read_bytes(), before)
 
     def test_snapshot_cannot_be_used_as_writable_destination(self):

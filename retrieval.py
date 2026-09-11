@@ -45,6 +45,7 @@ from __future__ import annotations
 import math
 import hashlib
 import logging
+import re
 import sqlite3
 from pathlib import Path
 
@@ -66,6 +67,39 @@ from rag_config import (
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = get_news_db_path()
+
+# Conservative aliases for the large-company examples reviewed in this project.
+# Unknown tickers retain metadata-only filtering rather than guessing names.
+COMPANY_ALIASES = {
+    "MSFT": ("microsoft",), "AAPL": ("apple",), "NVDA": ("nvidia",),
+    "AMZN": ("amazon",), "GOOG": ("google", "alphabet"),
+    "GOOGL": ("google", "alphabet"), "META": ("meta", "facebook"),
+    "TSLA": ("tesla",), "PLTR": ("palantir",),
+}
+
+
+def is_explicit_ticker_mismatch(ticker: str, article: dict) -> bool:
+    """Reject a different named stock only when target evidence is absent.
+
+    This is a conservative safeguard for noisy upstream ticker metadata,
+    not a complete company-entity recognizer.
+    """
+    ticker = ticker.upper()
+    if ticker not in COMPANY_ALIASES:
+        return False
+    text = f"{article.get('headline') or ''} {article.get('summary') or ''}"
+    if any(re.search(r"\b" + re.escape(name) + r"\b", text, re.I)
+           for name in (ticker, *COMPANY_ALIASES[ticker])):
+        return False
+    named = set(re.findall(r"\((?:(?:NASDAQ|NYSE)\s*:\s*)?([A-Z][A-Z.\-]{0,5})\)",
+                           article.get("headline") or ""))
+    named -= {"AI", "US", "USA", "UK", "ETF", "CEO", "CFO", "IPO", "EPS", "ADR"}
+    other_company_named = any(
+        re.search(r"\b" + re.escape(alias) + r"\b", article.get("headline") or "", re.I)
+        for company, aliases in COMPANY_ALIASES.items() if company != ticker
+        for alias in aliases
+    )
+    return bool(named - {ticker}) or other_company_named
 
 
 # ──────────────────────────────────────────────────────────────
@@ -427,6 +461,9 @@ def retrieve_news(
         if candidate_articles is not None or len(candidates) >= max(top_k, MIN_CANDIDATES_BEFORE_EXPAND):
             break
 
+    excluded_ids = [c["article_id"] for c in candidates if is_explicit_ticker_mismatch(ticker, c)]
+    candidates = [c for c in candidates if not is_explicit_ticker_mismatch(ticker, c)]
+
     empty_result = {
         "ticker": ticker.upper(),
         "investor_style": style,
@@ -434,6 +471,7 @@ def retrieve_news(
         "query_labels": query_labels,
         "lookback_days": used_window,
         "candidate_pool_size": len(candidates),
+        "excluded_ticker_mismatch_ids": excluded_ids,
         "per_query_topn": {label: [] for label in query_labels},
         "merged_candidate_count": 0,
         "exact_duplicate_count": 0,
@@ -508,6 +546,8 @@ def retrieve_news(
             "url": c["url"],
             "event_group_id": c["event_group_id"],
             "matched_queries": matched_queries[aid],
+            "best_query": max(sims[aid], key=sims[aid].get),
+            "query_scores": sims[aid],
             "semantic_score": semantic_score,
             "recency_score": recency_score,
             "final_score": final_score,
@@ -543,6 +583,7 @@ def retrieve_news(
         "query_labels": query_labels,
         "lookback_days": used_window,
         "candidate_pool_size": len(candidates),
+        "excluded_ticker_mismatch_ids": excluded_ids,
         "per_query_topn": per_query_topn,
         "merged_candidate_count": merged_candidate_count,
         "exact_duplicate_count": exact_duplicate_count,
@@ -610,6 +651,7 @@ def retrieve_news_with_fallback(
             fallback_source = "live_fallback"
         except Exception:
             fallback_articles = []
+    fallback_articles = [a for a in fallback_articles if not is_explicit_ticker_mismatch(ticker, a)]
     if fallback_articles:
         # Rank a broad candidate pool even when the DB has no stored embeddings.
         try:

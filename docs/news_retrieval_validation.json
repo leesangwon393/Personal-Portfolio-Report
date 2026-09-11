@@ -3,6 +3,7 @@
   "database": {
     "article_count": 1113,
     "original_index_count": 1113,
+    "working_article_count": 1113,
     "new_embedding_count": 1113,
     "ticker_count": 101,
     "date_range": [
@@ -30,7 +31,7 @@
                 "safe_downside_risk",
                 "safe_external_risk"
               ],
-              "final_score": 0.3908647210833782
+              "final_score": 0.39086472106231956
             },
             {
               "article_id": "8f10e5f807edda21cb6211bb07fa5347fb9b659e",
@@ -42,7 +43,7 @@
                 "safe_downside_risk",
                 "safe_external_risk"
               ],
-              "final_score": 0.36631310157459673
+              "final_score": 0.3663131015581561
             },
             {
               "article_id": "fa2861ae9ab1fc2d208842a1199630d62e926b89",
@@ -52,7 +53,7 @@
                 "core",
                 "safe_downside_risk"
               ],
-              "final_score": 0.3662592428175777
+              "final_score": 0.36625924280113714
             }
           ]
         },
@@ -69,7 +70,7 @@
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.38743653468769423
+              "final_score": 0.38743653467125355
             },
             {
               "article_id": "8828b3fc266e26af146cce2d6ebbcdda0f27572a",
@@ -79,7 +80,7 @@
                 "core",
                 "neutral_growth"
               ],
-              "final_score": 0.3862965969449488
+              "final_score": 0.3862965969321134
             },
             {
               "article_id": "75adc4955281fe21825b2594a11484cb1ec2c01f",
@@ -91,7 +92,7 @@
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.37754127153938527
+              "final_score": 0.3775412715183266
             }
           ]
         },
@@ -107,7 +108,7 @@
                 "aggressive_growth",
                 "aggressive_catalyst"
               ],
-              "final_score": 0.40790342372717475
+              "final_score": 0.40790342371433935
             },
             {
               "article_id": "8f10e5f807edda21cb6211bb07fa5347fb9b659e",
@@ -119,7 +120,7 @@
                 "aggressive_catalyst",
                 "aggressive_positive_momentum"
               ],
-              "final_score": 0.40258546046894356
+              "final_score": 0.4025854604525028
             },
             {
               "article_id": "75adc4955281fe21825b2594a11484cb1ec2c01f",
@@ -130,7 +131,7 @@
                 "aggressive_growth",
                 "aggressive_catalyst"
               ],
-              "final_score": 0.38550664553230424
+              "final_score": 0.3855066455112455
             }
           ]
         }
@@ -153,7 +154,7 @@
                 "safe_downside_risk",
                 "safe_external_risk"
               ],
-              "final_score": 0.47032589838874617
+              "final_score": 0.47032589837591066
             },
             {
               "article_id": "1c77c2be3d44096e9a8371e231013be551b82b3d",
@@ -165,7 +166,7 @@
                 "safe_downside_risk",
                 "safe_external_risk"
               ],
-              "final_score": 0.404666508739563
+              "final_score": 0.40466650872734755
             },
             {
               "article_id": "8414d1b9005a9a35912cb9d0ac2bbed6392a5642",
@@ -175,7 +176,7 @@
                 "core",
                 "safe_downside_risk"
               ],
-              "final_score": 0.36666849548181946
+              "final_score": 0.366668495469604
             }
           ]
         },
@@ -192,7 +193,7 @@
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.491946354330201
+              "final_score": 0.49194635431736555
             },
             {
               "article_id": "1c77c2be3d44096e9a8371e231013be551b82b3d",
@@ -204,7 +205,7 @@
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.4410829434249749
+              "final_score": 0.4410829434127595
             },
             {
               "article_id": "8414d1b9005a9a35912cb9d0ac2bbed6392a5642",
@@ -213,9 +214,10 @@
               "matched_queries": [
                 "core",
                 "neutral_growth",
+                "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.4349333653304925
+              "final_score": 0.43493336531827703
             }
           ]
         },
@@ -232,7 +234,7 @@
                 "aggressive_catalyst",
                 "aggressive_positive_momentum"
               ],
-              "final_score": 0.4703258983887451
+              "final_score": 0.4703258983759097
             },
             {
               "article_id": "1c77c2be3d44096e9a8371e231013be551b82b3d",
@@ -244,7 +246,7 @@
                 "aggressive_catalyst",
                 "aggressive_positive_momentum"
               ],
-              "final_score": 0.46193186507751965
+              "final_score": 0.46193186506530426
             },
             {
               "article_id": "8414d1b9005a9a35912cb9d0ac2bbed6392a5642",
@@ -255,7 +257,7 @@
                 "aggressive_growth",
                 "aggressive_positive_momentum"
               ],
-              "final_score": 0.4129487173977648
+              "final_score": 0.4129487173855494
             }
           ]
         }
@@ -278,18 +280,7 @@
                 "safe_downside_risk",
                 "safe_external_risk"
               ],
-              "final_score": 0.41889310054462436
-            },
-            {
-              "article_id": "5e81302336ca65cadfa56d213f6f3230d545bef8",
-              "headline": "Why Rapid7 (RPD) Is Down 23.3% After Cautious Guidance and CFO Appointment Despite Strong Q3",
-              "pubdate": "2025-11-08 00:00:00+00:00",
-              "matched_queries": [
-                "core",
-                "safe_stability",
-                "safe_downside_risk"
-              ],
-              "final_score": 0.40163030795734417
+              "final_score": 0.4188931005281837
             },
             {
               "article_id": "e33066a0023833c12dbd796a78044bc3e0fb1e04",
@@ -301,7 +292,19 @@
                 "safe_downside_risk",
                 "safe_external_risk"
               ],
-              "final_score": 0.4002991431363515
+              "final_score": 0.4002991431207049
+            },
+            {
+              "article_id": "9dababeb832cc2b8539d230e45754986b878c3d1",
+              "headline": "Microsoft (MSFT) Maintains Buy Rating at Truist After Solid Fiscal Q1 Results",
+              "pubdate": "2025-11-02 00:00:00+00:00",
+              "matched_queries": [
+                "core",
+                "safe_stability",
+                "safe_downside_risk",
+                "safe_external_risk"
+              ],
+              "final_score": 0.3317896256179587
             }
           ]
         },
@@ -317,7 +320,7 @@
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.490492613270249
+              "final_score": 0.4904926132538083
             },
             {
               "article_id": "e33066a0023833c12dbd796a78044bc3e0fb1e04",
@@ -329,18 +332,19 @@
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.4188339703508842
+              "final_score": 0.4188339703352376
             },
             {
               "article_id": "a31ee1941fde2ebab7c17a0ec3d91b3d6504a3d6",
               "headline": "Should You Buy Microsoft (MSFT) For Long-Term AI Gains?",
               "pubdate": "2025-11-09 00:00:00+00:00",
               "matched_queries": [
+                "core",
                 "neutral_growth",
                 "neutral_profitability_valuation",
                 "neutral_risk_outlook"
               ],
-              "final_score": 0.40265207712717493
+              "final_score": 0.4026520771098997
             }
           ]
         },
@@ -357,7 +361,7 @@
                 "aggressive_catalyst",
                 "aggressive_positive_momentum"
               ],
-              "final_score": 0.4314092115101839
+              "final_score": 0.43140921149453726
             },
             {
               "article_id": "d621d8bf02b01871f0286b26eb3ff904b19ce1eb",
@@ -367,7 +371,7 @@
                 "core",
                 "aggressive_positive_momentum"
               ],
-              "final_score": 0.41889310054462314
+              "final_score": 0.41889310052818235
             },
             {
               "article_id": "11e1822cf25f800bc41ca6e66d4801f6eb05ebb3",
@@ -376,7 +380,7 @@
               "matched_queries": [
                 "aggressive_catalyst"
               ],
-              "final_score": 0.40541340479438415
+              "final_score": 0.40541340477332544
             }
           ]
         }

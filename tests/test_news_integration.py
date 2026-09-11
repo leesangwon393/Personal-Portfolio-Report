@@ -11,6 +11,24 @@ from tests.fake_embedder import FakeEmbedder
 
 
 class TestNewsIntegration(unittest.TestCase):
+    def test_explicit_wrong_stock_is_rejected_but_related_news_is_kept(self):
+        wrong = {'headline': 'Why Rapid7 (RPD) Is Down', 'summary': 'Rapid7 revenue and cautious guidance.'}
+        self.assertTrue(retrieval.is_explicit_ticker_mismatch('MSFT', wrong))
+        self.assertTrue(retrieval.is_explicit_ticker_mismatch('MSFT', {
+            'headline': 'Palantir earnings beat expectations', 'summary': 'Software earnings.'}))
+        self.assertFalse(retrieval.is_explicit_ticker_mismatch('MSFT', {
+            **wrong, 'summary': 'Rapid7 is facing competition from Microsoft.'}))
+        self.assertFalse(retrieval.is_explicit_ticker_mismatch('MSFT', {
+            'headline': 'Cloud earnings report', 'summary': 'Sector overview'}))
+
+    def test_wrong_stock_cannot_reenter_through_recency_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = retrieval.retrieve_news_with_fallback(
+                'MSFT', 'SAFE', db_path=Path(directory) / 'absent.db', model=FakeEmbedder(),
+                live_fallback_fn=lambda *_: [{'headline': 'Rapid7 (RPD) earnings', 'summary': 'Revenue growth'}],
+            )
+        self.assertEqual(result['top_k'], [])
+
     def test_live_pool_is_ranked_differently_by_style_without_creating_db(self):
         articles = [
             {"headline": "NVDA " + " ".join(words), "summary": "", "pubdate": None}
